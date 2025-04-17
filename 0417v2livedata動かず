@@ -1,0 +1,243 @@
+package com.example.onlinechannelsounder
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import android.Manifest
+import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioRecord
+import android.media.AudioTrack
+import android.media.MediaRecorder
+import androidx.core.app.ActivityCompat
+import android.os.Build
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.tooling.preview.Preview
+import kotlin.math.log10
+import kotlin.math.pow
+import kotlin.math.sqrt
+import kotlin.math.atan2
+import kotlin.math.PI
+import androidx.compose.runtime.livedata.observeAsState
+import androidx.lifecycle.liveData
+import kotlin.math.roundToInt
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+
+
+class MainActivity : ComponentActivity() {
+
+    private var recorder: AudioRecord? = null
+    private var player: AudioTrack? = null
+    private val sampleRate = 96000 // 96kHz
+    private val signalLength = 450120 // 約10秒のデータ長
+    private val amplitude = 16384 // 2^14
+    private val bufferSize = signalLength // 信号の長さに合わせて録音バッファも同じに
+
+    private lateinit var recordedData: ShortArray
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        requestPermissions()
+
+        setContent {
+            OnlineChannelSounderApp()
+        }
+    }
+
+    private fun requestPermissions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val permissions = arrayOf(
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                Manifest.permission.READ_EXTERNAL_STORAGE
+            )
+            ActivityCompat.requestPermissions(this, permissions, 0)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun OnlineChannelSounderApp() {
+    var showGraph by remember { mutableStateOf(false) }
+    var cirData by remember { mutableStateOf(listOf<Float>()) }
+    var amplitudeData by remember { mutableStateOf(listOf<Float>()) }
+    var phaseData by remember { mutableStateOf(listOf<Float>()) }
+
+    if (showGraph) {
+        GraphScreen(
+            cirData = cirData,
+            amplitudeData = amplitudeData,
+            phaseData = phaseData,
+            onBack = { showGraph = false }
+        )
+    } else {
+        Scaffold(
+            topBar = { TopAppBar(title = { Text("Online Channel Sounder") }) },
+        ) { padding ->
+            Column(
+                modifier = Modifier
+                    .padding(padding)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Button(onClick = {
+                    // ダミーデータ生成（本番は録音処理とM系列生成をここに）
+                    val mSeq = generateMSequence(10).map { if (it == 0) 1f else -1f } // 0→1, 1→-1
+                    val recorded = mSeq // 自己相関仮定
+                    val correlation = correlate(recorded, mSeq)
+                    val fftResult = fft(correlation.toFloatArray())
+
+                    val ampSpec = fftResult.map { 10 * log10(it.first * it.first + it.second * it.second + 1e-6f) }
+                    val phaseSpec = fftResult.map { atan2(it.second, it.first) / PI.toFloat() } // -1~1に正規化
+                    val amplitude = 16384f //2^14
+
+                    cirData = correlation.map { it / amplitude } // 正規化これあってるの？
+                    amplitudeData = ampSpec
+                    phaseData = phaseSpec
+                    showGraph = true
+                }) {
+                    Text("録音と相関")
+                }
+            }
+        }
+    }
+}
+
+fun generateMSequence(m: Int): List<Int> {
+    val n = (1 shl m) - 1
+    val mseq = MutableList(n) { 0 }
+    var reg = 1
+    for (i in 0 until n) {
+        mseq[i] = reg and 1
+        val newbit = ((reg shr 9) xor (reg shr 2)) and 1
+        reg = (reg shr 1) or (newbit shl (m - 1))
+    }
+    return mseq
+}
+
+fun correlate(signal: List<Float>, mseq: List<Float>): List<Float> {
+    val len = mseq.size
+    val result = MutableList(len) { 0f }
+    for (i in 0 until len) {
+        var sum = 0f
+        for (j in 0 until len) {
+            if (i + j < signal.size) {
+                sum += signal[i + j] * mseq[j]
+            }
+        }
+        result[i] = sum / len
+    }
+    return result
+}
+
+fun fft(x: FloatArray): List<Pair<Float, Float>> {
+    val n = x.size
+    if (n == 1) return listOf(Pair(x[0], 0f))
+
+    val even = fft(x.filterIndexed { i, _ -> i % 2 == 0 }.toFloatArray())
+    val odd = fft(x.filterIndexed { i, _ -> i % 2 == 1 }.toFloatArray())
+
+    val result = MutableList(n) { Pair(0f, 0f) }
+    for (k in 0 until n / 2) {
+        val angle = -2 * PI * k / n
+        val cos = kotlin.math.cos(angle).toFloat()
+        val sin = kotlin.math.sin(angle).toFloat()
+        val real = cos * odd[k].first - sin * odd[k].second
+        val imag = sin * odd[k].first + cos * odd[k].second
+        result[k] = Pair(even[k].first + real, even[k].second + imag)
+        result[k + n / 2] = Pair(even[k].first - real, even[k].second - imag)
+    }
+    return result
+}
+
+@Composable
+fun GraphScreen(
+    cirData: List<Float>,
+    amplitudeData: List<Float>,
+    phaseData: List<Float>,
+    onBack: () -> Unit
+) {
+    Column(modifier = Modifier.padding(16.dp)) {
+        Button(onClick = onBack, modifier = Modifier.padding(bottom = 8.dp)) {
+            Text("戻る")
+        }
+        Text("CIR (インパルス応答)")
+        LabeledLineChart(
+            data = cirData,
+            yLabels = listOf("1", "0", "-1"),
+            xLabel = "time",
+            yLabel = "correlation"
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("振幅特性")
+        LabeledLineChart(
+            data = amplitudeData,
+            xLabel = "frequency [Hz]",
+            yLabel = "power [dB]",
+            xTicks = listOf(0, 6000, 12000, 24000, 32000, 48000)
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("位相特性")
+        LabeledLineChart(
+            data = phaseData,
+            xLabel = "frequency [Hz]",
+            yLabel = "normalized phase",
+            yLabels = listOf("0.5", "0", "-0.5")
+        )
+    }
+}
+
+@Composable
+fun LabeledLineChart(
+    data: List<Float>,
+    xLabel: String = "",
+    yLabel: String = "",
+    xTicks: List<Int> = emptyList(),
+    yLabels: List<String> = emptyList()
+) {
+    // 簡易グラフ描画（本格的なグラフライブラリ導入も可能）
+    Canvas(modifier = Modifier
+        .fillMaxWidth()
+        .height(150.dp)) {
+        val stepX = size.width / (data.size - 1)
+        val minY = data.minOrNull() ?: 0f
+        val maxY = data.maxOrNull() ?: 1f
+        val rangeY = maxY - minY
+
+        for (i in 1 until data.size) {
+            val x1 = stepX * (i - 1)
+            val y1 = size.height - (data[i - 1] - minY) / rangeY * size.height
+            val x2 = stepX * i
+            val y2 = size.height - (data[i] - minY) / rangeY * size.height
+            drawLine(
+                color = Color.Blue,
+                start = androidx.compose.ui.geometry.Offset(x1, y1),
+                end = androidx.compose.ui.geometry.Offset(x2, y2),
+                strokeWidth = 2f
+            )
+        }
+    }
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(xLabel)
+    }
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        yLabels.forEach { label ->
+            Text(label)
+        }
+    }
+}
