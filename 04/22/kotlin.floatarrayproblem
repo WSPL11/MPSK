@@ -1,0 +1,374 @@
+package com.example.test // ★ あなたのパッケージ名
+
+// ★★★ 必要な import 文 (ViewModel, StateFlow, Lifecycle などが追加) ★★★
+import android.Manifest
+import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import android.os.Bundle
+import android.util.Log
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView // ★ ChartComposable 用
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.ViewModel // ★ ViewModel 用
+import androidx.lifecycle.compose.collectAsStateWithLifecycle // ★ ViewModel 用
+import androidx.lifecycle.viewModelScope // ★ ViewModel 用
+import com.github.mikephil.charting.charts.LineChart // ★ ChartComposable 用
+import com.github.mikephil.charting.components.XAxis // ★ ChartComposable 用
+import com.github.mikephil.charting.components.YAxis // ★ ChartComposable 用
+import com.github.mikephil.charting.data.Entry // ★ ChartComposable 用
+import com.github.mikephil.charting.data.LineData // ★ ChartComposable 用
+import com.github.mikephil.charting.data.LineDataSet // ★ ChartComposable 用
+import com.github.mikephil.charting.formatter.ValueFormatter // ★ ChartComposable 用
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow // ★ ViewModel 用
+import kotlinx.coroutines.flow.StateFlow // ★ ViewModel 用
+import kotlinx.coroutines.flow.asStateFlow // ★ ViewModel 用
+import kotlinx.coroutines.flow.update // ★ ViewModel 用
+import org.jtransforms.fft.FloatFFT_1D
+import kotlin.math.* // kotlin.math.* でまとめてインポート
+import kotlin.collections.mapIndexedNotNull // Nullのやつ使いたい
+
+// --- 定数定義 (トップレベルに置く) ---
+private const val TAG = "SignalCorrelationApp" // TAG名を変更
+private const val SAMPLE_RATE = 44100
+private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
+private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
+private const val RECORDING_TIME_MS = 1000
+private const val IMPULSE_PERIOD = 1023
+private const val IMPULSE_AMPLITUDE = 16384.0f
+// FFTサイズ計算 (例: 1秒相当の次の2べき乗の倍)
+private val FFT_SIZE = 2.0.pow(ceil(log2((SAMPLE_RATE * 1.0).toDouble()))).toInt() * 2
+val entries = emptyList<Entry>()
+
+// --- ★★★ ViewModel クラス定義を追加 ★★★ ---
+// UI に公開する状態データクラス
+data class CorrelationUiState(
+    val isProcessing: Boolean = false,
+    val chartData: List<Entry> = emptyList(), // グラフ用データ
+    val statusMessage: String = "ボタンを押してテスト実行",
+    val peakInfo: String = "" // ピーク情報
+)
+
+class CorrelationViewModel : ViewModel() {
+
+    private val _uiState = MutableStateFlow(CorrelationUiState())
+    val uiState: StateFlow<CorrelationUiState> = _uiState.asStateFlow()
+
+    // テストモード (自己相関) 実行
+    fun runAutocorrelationTest() {
+        if (_uiState.value.isProcessing) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isProcessing = true, statusMessage = "自己相関テスト実行中...", chartData = emptyList(), peakInfo = "") }
+
+            // --- 計算 ---
+            val testInputSignal = generateImpulseTrainShort(FFT_SIZE)
+            val impulseTrainRef = generateImpulseTrain(FFT_SIZE)
+            val correlationResult = calculateCorrelationFFT(testInputSignal, impulseTrainRef)
+            val normalizedCorrelation = correlationResult?.let { normalizeCorrelationByMaxValue(it) }
+
+            if (normalizedCorrelation != null) {
+                fun convertToChartEntries(data: List<Float?>): List<Entry> {
+                    return data.mapIndexedNotNull { index, value ->
+                        value?.let { Entry(index.toFloat(), it) }
+                    }
+                }
+
+                val entries = convertToChartEntries(normalizedCorrelation)  // ← これが必要！
+
+                val peakResult = findPeak(normalizedCorrelation)
+                _uiState.update {
+                    it.copy(
+                        isProcessing = false,
+                        chartData = entries,
+                        statusMessage = "自己相関テスト完了\n★期待値: ピーク位置(サンプル遅延)=0, ピーク値=1.0",
+                        peakInfo = peakResult
+                    )
+                }
+            } else {
+                _uiState.update {
+                    it.copy(isProcessing = false, statusMessage = "エラー: 計算に失敗", chartData = emptyList(), peakInfo = "")
+                }
+            }
+        }
+    }
+
+    // TODO: マイク入力からの相互相関処理も同様に関数化する (runMicCorrelationなど)
+//
+//    // --- ヘルパー関数 (ViewModel内に移動またはトップレベルのまま) ---
+//    private fun convertToChartEntries(data: FloatArray): List<Entry> {
+//        val step = 10 // 間引き mapIndexedNotNull というなまえを変更
+//        return data.mapIndexedNotNull  { index, value ->
+//            if (index % step == 0) {
+//                val timeMs = index * 1000.0f / SAMPLE_RATE
+//                Entry(timeMs, value.coerceIn(-1.5f, 1.5f))
+//            } else {
+//                null
+//            }
+//        }
+//    }
+
+    private fun findPeak(data: FloatArray): String {
+        if (data.isEmpty()) return "ピーク情報なし"
+        var peakValue = 0.0f; var peakIndex = -1; var maxAbsValue = -1.0f
+        data.forEachIndexed { index, value ->
+            val absVal = abs(value)
+            if (absVal > maxAbsValue) {
+                maxAbsValue = absVal; peakValue = value; peakIndex = index
+            }
+        }
+        return if (peakIndex != -1) {
+            val peakTimeMs = peakIndex.toDouble() / SAMPLE_RATE * 1000.0
+            "ピーク値: %.4f @ %.2f ms (Index: %d)".format(peakValue, peakTimeMs, peakIndex)
+        } else { "ピーク検出不能" }
+    }
+}
+
+// --- Activity ---
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme { // ★ デフォルトテーマを使用
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    CorrelationScreen() // ViewModel は中で取得される
+                }
+            }
+        }
+    }
+}
+//04/22 追加
+fun normalizeCorrelationByMaxValue(correlation: FloatArray): List<Float?> {
+    val max = correlation.maxOrNull()?.takeIf { it != 0f } ?: return emptyList()
+    return correlation.map { it / max }
+}
+
+// --- ★★★ UI Composable を修正 ★★★ ---
+@Composable
+fun CorrelationScreen(viewModel: CorrelationViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) { // ViewModel を取得
+
+    // --- ViewModel の状態を監視 ---
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle() // ★ ライフサイクル対応で状態を収集
+
+    // --- パーミッション関連 (マイクを使うボタンのために残す) ---
+    val context = LocalContext.current
+    var hasRecordPermission by remember { mutableStateOf(false) } // ★ これはViewModel管理でも良いが、UI固有としても残せる
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { isGranted -> hasRecordPermission = isGranted } // 結果を hasRecordPermission に反映
+    )
+    LaunchedEffect(Unit) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            hasRecordPermission = true
+        } else {
+            // 必要ならここで要求するか、ボタンクリック時に要求
+            // permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        // --- ボタン ---
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // 録音実行ボタン (処理は未実装)
+            Button(
+                onClick = {
+                    if (!hasRecordPermission) {
+                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    } else if (!uiState.isProcessing) {
+                        // TODO: viewModel.runMicCorrelation() のような関数を呼び出す
+                        Log.d(TAG, "録音して相互相関計算 (未実装)")
+                    }
+                },
+                enabled = !uiState.isProcessing, // 処理中でなければ有効
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("録音して相互相関") // ラベル変更
+            }
+            // テストモード実行ボタン
+            Button(
+                onClick = { viewModel.runAutocorrelationTest() }, // ViewModel の関数呼び出し
+                enabled = !uiState.isProcessing, // 処理中でなければ有効
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("テスト実行(自己相関)")
+            }
+        }
+
+        // --- ステータス & ピーク情報表示 ---
+        Text(text = uiState.statusMessage)
+        Text(text = uiState.peakInfo)
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // --- ★★★ グラフ表示エリア ★★★ ---
+        Text("Correlation Result", style = MaterialTheme.typography.titleMedium)
+        if (uiState.chartData.isNotEmpty()) { // データがある場合のみグラフ表示
+            LineChartComposable(
+                modifier = Modifier.fillMaxWidth().height(300.dp),
+                chartData = uiState.chartData, // ViewModel からのデータ
+                label = "Autocorrelation",      // ラベル
+                xAxisFormatter = TimeAxisFormatter(), // X軸フォーマッタ
+                yAxisMin = -1.1f,               // Y軸範囲
+                yAxisMax = 1.1f,
+                yAxisLabelCount = 3             // Y軸ラベル数
+            )
+        } else {
+            // データがない場合はプレースホルダーなどを表示しても良い
+            Box(modifier = Modifier.fillMaxWidth().height(300.dp), contentAlignment = Alignment.Center) {
+                Text("ここにグラフが表示されます")
+            }
+        }
+    }
+}
+
+// --- ★★★ グラフ表示用 Composable (このファイル内に追加) ★★★ ---
+@Composable
+fun LineChartComposable(
+    modifier: Modifier = Modifier,
+    chartData: List<Entry>,
+    label: String,
+    xAxisFormatter: ValueFormatter? = null,
+    yAxisMin: Float? = null,
+    yAxisMax: Float? = null,
+    yAxisLabelCount: Int = 5,
+    lineColor: Int = android.graphics.Color.BLUE
+) {
+    AndroidView(
+        factory = { context ->
+            LineChart(context).apply { /* ... チャート設定 ... */
+                this.description.isEnabled = false; this.legend.isEnabled = true
+                this.setDrawGridBackground(false); this.setTouchEnabled(true); this.setPinchZoom(true)
+                this.xAxis.position = XAxis.XAxisPosition.BOTTOM; this.xAxis.setDrawGridLines(true)
+                xAxisFormatter?.let { this.xAxis.valueFormatter = it }
+                this.axisLeft.setDrawGridLines(true)
+                yAxisMin?.let { this.axisLeft.axisMinimum = it }
+                yAxisMax?.let { this.axisLeft.axisMaximum = it }
+                this.axisLeft.setLabelCount(yAxisLabelCount, true)
+                this.axisRight.isEnabled = false
+            }
+        },
+        update = { chart ->
+            if (chartData.isNotEmpty()) {
+                val dataSet = LineDataSet(chartData, label).apply {
+                    this.color = lineColor; this.setDrawCircles(false)
+                    this.setDrawValues(false); this.lineWidth = 1.5f
+                }
+                chart.data = LineData(dataSet)
+            } else { chart.clear() }
+            chart.invalidate()
+        },
+        modifier = modifier
+    )
+}
+
+// ★★★ 軸フォーマッタクラス (このファイル内に追加) ★★★
+class TimeAxisFormatter() : ValueFormatter() {
+    override fun getAxisLabel(value: Float, axis: com.github.mikephil.charting.components.AxisBase?): String {
+        return "%.1f ms".format(value)
+    }
+}
+class FrequencyAxisFormatter() : ValueFormatter() { // 今回は未使用
+    override fun getAxisLabel(value: Float, axis: com.github.mikephil.charting.components.AxisBase?): String {
+        return if (value >= 1000) "%.1f kHz".format(value / 1000f) else "%.0f Hz".format(value)
+    }
+}
+
+
+// --- ★★★ 信号処理関数 (トップレベル private) ★★★ ---
+// generateImpulseTrain, generateImpulseTrainShort, calculateCorrelationFFT, normalizeCorrelationByMaxValue (新)
+// recordAudio もここ
+
+/**
+ * 相互相関結果をその絶対値の最大値で正規化する関数。
+ */
+private fun normalizeCorrelationByMaxValue(correlationData: FloatArray): FloatArray {
+    Log.d(TAG, "normalizeCorrelationByMaxValue: 開始 data.size=${correlationData.size}")
+    if (correlationData.isEmpty()) return FloatArray(0)
+    val maxAbsValue = correlationData.maxOfOrNull { abs(it) } ?: 0.0f
+    Log.d(TAG, "normalizeCorrelationByMaxValue: maxAbsValue=$maxAbsValue")
+    return if (maxAbsValue < 1e-9f) {
+        FloatArray(correlationData.size)
+    } else {
+        FloatArray(correlationData.size) { i -> correlationData[i] / maxAbsValue }
+    }
+}
+// 他の信号処理関数 (generateImpulseTrain, generateImpulseTrainShort, calculateCorrelationFFT, recordAudio) は
+// ユーザーが提示したコードに含まれているものをそのまま (private fun として) 配置する想定
+// (ここでは省略)
+
+
+private fun generateImpulseTrain(length: Int): FloatArray {
+    Log.d(TAG, "generateImpulseTrain: 開始 length=$length, period=$IMPULSE_PERIOD")
+    val impulseTrain = FloatArray(length)
+    for (i in 0 until length step IMPULSE_PERIOD) {
+        impulseTrain[i] = IMPULSE_AMPLITUDE
+    }
+    Log.d(TAG, "generateImpulseTrain: 完了")
+    return impulseTrain
+}
+
+private fun generateImpulseTrainShort(length: Int): ShortArray {
+    Log.d(TAG, "generateImpulseTrainShort: 開始 length=$length, period=$IMPULSE_PERIOD")
+    val impulseTrain = ShortArray(length)
+    val amplitudeShort = IMPULSE_AMPLITUDE.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+    Log.d(TAG, "generateImpulseTrainShort: amplitudeShort=$amplitudeShort")
+    for (i in 0 until length step IMPULSE_PERIOD) {
+        if (i < impulseTrain.size) {
+            impulseTrain[i] = amplitudeShort
+        }
+    }
+    Log.d(TAG, "generateImpulseTrainShort: 完了")
+    return impulseTrain
+}
+
+private suspend fun calculateCorrelationFFT(signal1: ShortArray, signal2: FloatArray): FloatArray? = withContext(Dispatchers.Default) {
+    // ... (FFTや乗算、逆FFTの長い実装コード) ...
+    // (以前の回答にあるコード全体です)
+    try {
+        val fft = FloatFFT_1D(FFT_SIZE.toLong())
+        val fftData1 = FloatArray(FFT_SIZE) { i -> if (i < signal1.size) signal1[i].toFloat() else 0.0f }
+        fft.realForward(fftData1)
+        val fftData2 = signal2.copyOf()
+        fft.realForward(fftData2)
+        for (k in 1 until FFT_SIZE / 2) { fftData2[2 * k + 1] = -fftData2[2 * k + 1] }
+        val correlationSpectrum = FloatArray(FFT_SIZE)
+        correlationSpectrum[0] = fftData1[0] * fftData2[0]
+        correlationSpectrum[1] = fftData1[1] * fftData2[1]
+        for (k in 1 until FFT_SIZE / 2) {
+            val x_re = fftData1[2 * k]; val x_im = fftData1[2 * k + 1]
+            val y_conj_re = fftData2[2 * k]; val y_conj_im = fftData2[2 * k + 1]
+            correlationSpectrum[2 * k] = x_re * y_conj_re - x_im * y_conj_im
+            correlationSpectrum[2 * k + 1] = x_re * y_conj_im + x_im * y_conj_re
+        }
+        fft.realInverse(correlationSpectrum, true)
+        Log.d(TAG, "calculateCorrelationFFT: 完了")
+        return@withContext correlationSpectrum
+    } catch (e: Exception) {
+        Log.e(TAG, "calculateCorrelationFFT: 計算中にエラー: ${e.message}", e)
+        return@withContext null
+    }
+}
+
+
+// generateImpulseTrain, generateImpulseTrainShort, calculateCorrelationFFT, recordAudio の定義が
+// このファイル (MainActivity.kt) のトップレベルに private fun として存在する必要があります。
+// もし ViewModel に移動したい場合は、ViewModel 内に定義を移してください。
