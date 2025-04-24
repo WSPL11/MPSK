@@ -1,0 +1,810 @@
+// パッケージ名は build.gradle.kts と一致していることを確認
+package com.example.test
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import android.os.Bundle
+import android.util.Log
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.* // Material 3 を使用
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+// ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+// ★ テーマの import を一旦コメントアウト。ui.theme パッケージとテーマファイルを確認してください。★★
+// ★ もし ui.theme パッケージが存在しない場合、この import は不要です。                      ★★
+// ★ 代わりに MaterialTheme を直接使用します。                                          　★★
+// ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+// import com.example.test.ui.theme.YourAppNameTheme // ← エラーが出ていたのでコメントアウト
+
+import kotlinx.coroutines.*
+// JTransforms の import (build.gradle に依存関係を追加し、Sync後に解決されるはず)
+import org.jtransforms.fft.FloatFFT_1D
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.log2
+import kotlin.math.pow
+import kotlin.math.sqrt
+
+// --- 定数定義 ---
+private const val TAG = "SignalCorrelationApp" // Logcatでログを出力する際の識別タグ
+private const val SAMPLE_RATE = 44100       // 音声処理や録音で使用するサンプリングレート (Hz)
+private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO // 録音時のチャンネル設定 (モノラル)
+private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT // 録音時の音声データ形式 (16ビットPCM)
+private const val RECORDING_TIME_MS = 1000   // マイク録音ボタンを押した際の録音時間 (ミリ秒単位)
+private const val IMPULSE_PERIOD = 1024      // インパルス系列の周期 (サンプル数)
+private const val IMPULSE_AMPLITUDE = 16384.0f // インパルス系列のインパルスの振幅 (2^14)
+// FFT計算や相関計算で使用するデータ点数 (サンプル数)。ここでは録音時間1秒相当のデータが入る、次の2のべき乗の倍のサイズに設定。
+//private val FFT_SIZE = 2.0.pow(ceil(log2((SAMPLE_RATE * 1.0).toDouble()))).toInt() * 2
+private val FFT_SIZE = 1024
+// --- M系列 参照信号 ---
+private const val M_SEQ_LENGTH = 1023 //1023 + 1(0挿入)
+// ★★★ ここにあなたが貼り付けた M系列データを Float の List として定義 ★★★
+// (各数値の末尾に 'f' をつけ、カンマで区切る必要があります)
+private val M_SEQUENCE_RAW_DATA: List<Float> = listOf(
+    -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f,
+    -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f,
+    -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f,
+    1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f,
+    1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f,
+    -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f,
+    -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f,
+    1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f,
+    1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f,
+    1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f,
+    -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f)
+
+// ★★★ FFT用にゼロパディングした参照用M系列 (FloatArray) ★★★
+// この変数を相互相関計算の参照信号として使用
+val M_SEQUENCE_REFERENCE_PADDED: FloatArray = FloatArray(M_SEQ_LENGTH).apply {
+    Log.d("DataCheck", "Checking M_SEQUENCE_RAW_DATA chunk sizes:")
+    M_SEQUENCE_RAW_DATA.chunked(100).forEachIndexed { index, chunk ->
+        // Logcat に出力するなら Log.d を使う
+        Log.d("DataCheck", "Block ${index + 1}: Size = ${chunk.size}")
+    }
+    if (M_SEQUENCE_RAW_DATA.size == M_SEQ_LENGTH) {
+        // M系列データを配列の先頭にコピー
+        M_SEQUENCE_RAW_DATA.forEachIndexed { index, value ->
+            this[index] = value
+        }
+        // 残り (index 1023 から FFT_SIZE-1 まで) は 0.0f で初期化されている?
+    } else {
+        Log.e(
+            "MSequenceData",
+            "Error: M_SEQUENCE_RAW_DATA の要素数が $M_SEQ_LENGTH ではありません (${M_SEQUENCE_RAW_DATA.size}個)"
+        )
+    }
+}
+
+// ★★★ M系列データから ShortArrayを生成する関数を追加 ★★★
+/**
+ * グローバル定数 M_SEQUENCE_RAW_DATA を元に、指定された長さまでゼロパディングされた
+ * ShortArray を生成する。
+ * @param length 生成する配列の長さ (FFTサイズ)。
+ * @return ゼロパディングされた M系列 (ShortArray)。データがない場合は空配列。
+ */
+private fun generateMSequenceShortPadded(length: Int): ShortArray {
+    Log.d(TAG, "generateMSequenceShortPadded: 開始 length=$length")
+    val shortArray = ShortArray(length) // ゼロで初期化
+    if (M_SEQUENCE_RAW_DATA.size == M_SEQ_LENGTH) {
+        M_SEQUENCE_RAW_DATA.forEachIndexed { index, value ->
+            // Float (+1.0f / -1.0f) を Short に変換してコピー
+            shortArray[index] = value.toInt().toShort() // +1 または -1 になるはず
+        }
+    } else {
+        Log.e(TAG, "generateMSequenceShortPadded: M_SEQUENCE_RAW_DATA の長さが不正です。")
+        // エラーケースとして空配列を返すか、例外を投げても良い
+    }
+    // ★★★ デバッグログ追加はじめの5つを見る ★★★
+    val sumSq = shortArray.sumOf { it.toDouble() * it.toDouble() }
+    Log.d(TAG, "generateMSequenceShortPadded: First 5 = ${shortArray.take(5).joinToString()}, SumSq = $sumSq")
+    // ★★★★★★★★★★★★★★★
+    Log.d(TAG, "generateMSequenceShortPadded: 完了")
+    return shortArray
+}
+// --- Activity ---
+class MainActivity : ComponentActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        setContent {
+            // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            // ★ カスタムテーマの代わりにデフォルトの MaterialTheme を使用します。
+            // ★ プロジェクトに合わせたテーマを適用したい場合は、
+            // ★ ui.theme パッケージ内のテーマファイルを確認し、
+            // ★ 上記の import とここの呼び出しを修正してください。
+            // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            MaterialTheme { // ← YourAppNameTheme の代わりに MaterialTheme を使用
+                CorrelationScreen()
+            }
+        }
+    }
+}
+
+// --- UI (Jetpack Compose) ---
+@Composable
+fun CorrelationScreen() {
+    // (中身は変更なし、ただし MaterialTheme が適用される)
+    val context = LocalContext.current
+    var hasRecordPermission by remember { mutableStateOf(false) }
+    var isProcessing by remember { mutableStateOf(false) }
+    var resultText by remember { mutableStateOf("ボタンを押して処理を開始") }
+    val coroutineScope = rememberCoroutineScope()
+    val scrollState = rememberScrollState()
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { isGranted ->
+            hasRecordPermission = isGranted
+            if (!isGranted) {
+                Log.w(TAG, "マイクの使用が許可されませんでした")
+                resultText = "マイクのパーミッションが必要です。アプリ設定から許可してください。"
+            } else {
+                resultText = "マイク使用可能。ボタンを押して処理を開始"
+            }
+        }
+    )
+
+    LaunchedEffect(Unit) {
+        when (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)) {
+            PackageManager.PERMISSION_GRANTED -> {
+                hasRecordPermission = true
+                resultText = "マイク使用可能。ボタンを押して処理を開始"
+            }
+            else -> {
+                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp) // ボタン間のスペースを少し調整
+    ) { // --- 録音実行ボタン ---
+        Button(
+            onClick = {
+                if (hasRecordPermission && !isProcessing) {
+                    coroutineScope.launch {
+                        isProcessing = true
+                        resultText = "処理を開始します...\n1. 録音中..."
+                        Log.d(TAG, "処理開始: 録音")
+                        val recordedAudio = recordAudio(SAMPLE_RATE)//変更2025/04/23
+                        if (recordedAudio == null) {
+                            Log.d(TAG, "録音できてない")
+                            isProcessing = false
+                            return@launch
+                        }
+                        resultText += "\n録音完了 (${recordedAudio.size} samples)"
+                        // ... (インパルス列生成、相互相関計算、正規化、結果表示は共通化可能だが、一旦そのまま)
+                        resultText += "\n2. インパルス列生成中..."
+                        val impulseTrainRef = generateImpulseTrain(IMPULSE_PERIOD) // 参照信号
+                        resultText += "\nインパルス列生成完了"
+                        resultText += "\n3. 相互相関計算中 (FFT)..."
+                        val correlationResult = calculateCrossCorrelationFFT(recordedAudio, impulseTrainRef) // ★ 録音データを使用
+                        if (correlationResult == null) {
+                            Log.d(TAG,"相関できてない")
+                            isProcessing = false
+                            return@launch
+                        }
+                        resultText += "\n相互相関計算完了"
+                        resultText += "\n4. 正規化中..."
+                        val normalizedCorrelation = normalizeCorrelation(correlationResult)
+                        resultText += "\n正規化完了"
+                        resultText += "\n5. 結果表示準備中..."
+                        val formattedResult = formatCorrelationResult(normalizedCorrelation)
+                        resultText = formattedResult
+                        Log.d(TAG, "録音モード 処理完了")
+                        isProcessing = false
+                    }
+                } else if (isProcessing) {
+                    // 処理中
+                } else {
+                    resultText = "マイクのパーミッションが必要です。許可してください。"
+                    permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            },
+            // パーミッションがあり、処理中でない場合のみ有効
+            enabled = hasRecordPermission && !isProcessing,
+            modifier = Modifier.fillMaxWidth() // 幅を合わせる
+        ) {
+            Text("録音して相互相関計算")
+        }
+
+//M追加したい
+
+
+
+        // --- テストモード実行ボタン ---
+        Button(
+            onClick = {
+                if (!isProcessing) { // 処理中でなければ実行
+                    coroutineScope.launch { // コルーチンを開始
+                        isProcessing = true
+                        // ★ 開始メッセージを設定 ★
+                        resultText = "テスト実行中 (Impulse & M系列)..."
+                        Log.d(TAG, "両自己相関テスト開始")
+
+                        var impulseResultText = "" // インパルス結果用
+                        var mSequenceResultText = "" // M系列結果用
+
+                        // --- 1. Impulse 自己相関 ---
+                        try { // エラーが発生しても次の処理に進めるように try-catch
+                            val testInputSignalImp = generateImpulseTrainShort(FFT_SIZE)
+                            val impulseTrainRef = generateImpulseTrain(FFT_SIZE)
+                            Log.d(TAG, "Impulseテスト: 計算中...")
+                            val correlationResultImp = calculateCrossCorrelationFFT(testInputSignalImp, impulseTrainRef)
+                            if (correlationResultImp != null) {
+                                val normalizedCorrelationImp = normalizeCorrelation(correlationResultImp) // エネルギー正規化
+                                impulseResultText = "--- Impulse自己相関テスト結果 ---\n" + formatCorrelationResult(normalizedCorrelationImp)
+                            } else {
+                                impulseResultText = "--- Impulse自己相関テスト結果 ---\nエラー: 相関計算失敗"
+                                Log.e(TAG, "Impulseテスト: 相関計算失敗")
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Impulseテスト: 例外発生", e)
+                            impulseResultText = "--- Impulse自己相関テスト結果 ---\n例外発生: ${e.message}"
+                        }
+
+                        // --- 2. M系列 自己相関 ---
+                        try { // エラーが発生しても大丈夫なように try-catch
+                            val testInputSignalM = generateMSequenceShortPadded(M_SEQ_LENGTH ) // M系列 Short 生成
+                            val mSequenceRef = M_SEQUENCE_REFERENCE_PADDED          // M系列 Float 参照
+                            Log.d(TAG, "M系列テスト: 計算中...")
+                            if (testInputSignalM.size != M_SEQ_LENGTH  || mSequenceRef.size != M_SEQ_LENGTH ) {
+                                throw IllegalStateException("M系列信号準備失敗 (サイズ: ${testInputSignalM.size}, ${mSequenceRef.size})")
+                            }
+                            //時間領域
+                            val correlationResultTD = calculateNormalizedCorrelationTimeDomain(
+                                testInputSignalM, // ShortArray (関数内で先頭 1023 点を使用)
+                                mSequenceRef,   // FloatArray (関数内で先頭 1023 点を使用)
+                                M_SEQ_LENGTH    // 周期 = 1023
+                            )
+                            if (correlationResultTD != null) {
+                                val formattedResult = formatCorrelationResult(correlationResultTD)
+                                mSequenceResultText = "--- M系列自己相関テスト結果 (★時間領域計算★) ---\n" + formattedResult
+
+                            }
+//                            val correlationResultM = calculateCrossCorrelationFFT(testInputSignalM, mSequenceRef)
+//                            if (correlationResultM != null) {
+//                                val normalizedCorrelationM = normalizeCorrelation(correlationResultM) // エネルギー正規化
+//                                mSequenceResultText = "--- M系列自己相関テスト結果 ---\n" + formatCorrelationResult(normalizedCorrelationM)
+//                            } else {
+//                                mSequenceResultText = "--- M系列自己相関テスト結果 ---\nエラー: 相関計算失敗"
+//                                Log.e(TAG, "M系列テスト: 相関計算失敗")
+//                            }
+
+                        } catch (e: Exception) {
+                            Log.e(TAG, "M系列テスト: 例外発生", e)
+                            mSequenceResultText = "--- M系列自己相関テスト結果 ---\n例外発生: ${e.message}"
+                        }
+
+                        // --- 3. 結果を結合して表示 ---
+                        resultText = impulseResultText + "\n\n" + mSequenceResultText // 改行を入れて結合
+                        isProcessing = false
+                        Log.d(TAG, "両自己相関テスト 処理完了")
+                    }
+                }
+            },
+            enabled = !isProcessing,
+            modifier = Modifier.wrapContentWidth()
+
+        ) {
+            // ★ ボタンのラベルも変更★
+            Text("    テスト実行 ( Impulse & M系列 )    ")
+        }
+        // --- 結果表示エリア ---
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            border = ButtonDefaults.outlinedButtonBorder
+        ) {
+            Text(
+                text = resultText,
+                modifier = Modifier
+                    .padding(8.dp)
+                    .verticalScroll(scrollState)
+            )
+        }
+    }
+}
+
+
+// --- 音声処理・計算関連の関数 ---
+// (recordAudio, generateImpulseTrain, calculateCrossCorrelationFFT, normalizeCorrelation, formatCorrelationResult 関数は変更なし)
+// ... (省略された関数のコードをここに含める)
+/**
+ * AudioRecordを使用してマイクから指定サンプル数録音する関数。
+ * @param targetSamples 録音する目標サンプル数。
+ * @return 録音された音声データ(ShortArray)、失敗した場合はnull。
+ */
+private suspend fun recordAudio(targetSamples: Int): ShortArray? = withContext(Dispatchers.IO) {
+    Log.d(TAG, "recordAudio: 開始 targetSamples=$targetSamples")
+    // 最小バッファサイズを取得
+    // AudioRecord.getMinBufferSize は非推奨になる可能性があるため、代替手段も考慮 (今回はそのまま)
+    val minBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
+    if (minBufferSize == AudioRecord.ERROR_BAD_VALUE || minBufferSize == AudioRecord.ERROR) {
+        Log.e(TAG, "recordAudio: AudioRecordのバッファサイズ取得に失敗 minBufferSize=$minBufferSize")
+        return@withContext null
+    }
+
+    // 読み取りバッファサイズを設定 (最小バッファサイズより大きく、ターゲットサイズも考慮)
+    // 十分な大きさがないと read がブロックしたり、データを取りこぼす可能性がある
+    val bufferSize = maxOf(minBufferSize, targetSamples) * 2 // 余裕を持たせる
+
+    var audioRecord: AudioRecord? = null
+    try {
+        Log.d(TAG, "recordAudio: AudioRecord初期化試行 bufferSize=$bufferSize")
+        // パーミッションは呼び出し元で確認済みとする
+        // APIレベルによっては AudioRecord.Builder を使う方が推奨される
+        audioRecord = AudioRecord(
+            MediaRecorder.AudioSource.MIC,
+            SAMPLE_RATE,
+            CHANNEL_CONFIG,
+            AUDIO_FORMAT,
+            bufferSize
+        )
+
+        // 初期化状態を確認
+        if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
+            Log.e(TAG, "recordAudio: AudioRecordの初期化に失敗 state=${audioRecord.state}")
+            // AudioRecord.getState() で詳細な状態を確認できる場合がある
+            return@withContext null
+        }
+        Log.d(TAG, "recordAudio: AudioRecord初期化成功")
+
+        // 録音データを格納する配列
+        val audioData = ShortArray(targetSamples)
+        var totalSamplesRead = 0
+
+        // 録音開始
+        audioRecord.startRecording()
+        // audioRecord.recordingState == AudioRecord.RECORDSTATE_RECORDING であることを確認するとより堅牢
+        Log.d(TAG, "recordAudio: 録音開始")
+
+        // 目標サンプル数に達するか、コルーチンがキャンセルされるまで読み込み続ける
+        while (totalSamplesRead < targetSamples && currentCoroutineContext().isActive) {
+            // バッファからデータを読み込む
+            // read() はブロッキング呼び出しになる可能性がある
+            val readResult = audioRecord.read(audioData, totalSamplesRead, targetSamples - totalSamplesRead)
+
+            if (readResult > 0) {
+                // 読み込んだサンプル数を加算
+                // 読み込んだサンプル数を加算
+                totalSamplesRead += readResult
+            } else if (readResult == 0) {
+                // データがまだない場合、少し待機 (ビジーループ回避)
+                delay(10) // 10ミリ秒待つ
+            } else {
+                // エラー発生 (readResult < 0)
+                // AudioRecord.ERROR_INVALID_OPERATION, ERROR_BAD_VALUE, ERROR_DEAD_OBJECT, ERROR
+                Log.e(TAG, "recordAudio: AudioRecord.readエラー: $readResult")
+                break // ループを抜ける
+            }
+        }
+        Log.d(TAG, "recordAudio: 録音ループ終了 totalSamplesRead=$totalSamplesRead")
+
+        // 録音停止
+        // audioRecord.recordingState == AudioRecord.RECORDSTATE_STOPPED であることを確認
+        audioRecord.stop()
+        Log.d(TAG, "recordAudio: 録音停止")
+
+        // 実際に読み込んだデータだけを返す（目標より少ない場合もある）
+        return@withContext if (totalSamplesRead > 0) {
+            audioData.copyOf(totalSamplesRead) // 読み込んだ分だけコピーして返す
+        } else {
+            Log.w(TAG, "recordAudio: サンプルが全く読み込めませんでした")
+            null // 読み込めなかった場合はnull
+        }
+
+    } catch (e: SecurityException) {
+        // RECORD_AUDIO パーミッションがない場合に発生する可能性がある
+        Log.e(TAG, "recordAudio: パーミッションエラー: ${e.message}", e)
+        return@withContext null
+    } catch (e: IllegalStateException) {
+        // AudioRecordが適切な状態でない場合 (例: 初期化失敗、すでにrelease済み)
+        Log.e(TAG, "recordAudio: AudioRecord状態エラー: ${e.message}", e)
+        return@withContext null
+    } catch (e: Exception) {
+        // その他の予期せぬエラー
+        Log.e(TAG, "recordAudio: 録音中に予期せぬエラー: ${e.message}", e)
+        return@withContext null
+    } finally {
+        // AudioRecordリソースを確実に解放
+        // audioRecord?.state == AudioRecord.STATE_INITIALIZED の場合のみ release() を呼ぶのがより安全
+        audioRecord?.release()
+        Log.d(TAG, "recordAudio: AudioRecord解放")
+    }
+}
+
+/**
+ * 指定された周期と振幅を持つインパルス列を生成する関数。
+ * @param length 生成する配列の長さ (FFTサイズに合わせる)。
+ * @return 生成されたインパルス列 (FloatArray)。
+ */
+private fun generateImpulseTrain(length: Int): FloatArray {
+    Log.d(TAG, "generateImpulseTrain: 開始 length=$length, period=$IMPULSE_PERIOD")
+    // 指定された長さのFloatArrayを生成し、0.0fで初期化
+    val impulseTrain = FloatArray(length)
+    // 配列のインデックスが周期(IMPULSE_PERIOD)の倍数となる位置に振幅を設定
+    // i = 0, IMPULSE_PERIOD, 2*IMPULSE_PERIOD, ...
+    for (i in 0 until length step IMPULSE_PERIOD) {
+        impulseTrain[i] = IMPULSE_AMPLITUDE
+    }
+    Log.d(TAG, "generateImpulseTrain: 完了")
+    return impulseTrain
+}
+
+/**
+ * 指定された周期と振幅を持つインパルス列を生成する関数 (ShortArray版)。
+ * テストモードで使用します。
+ * @param length 生成する配列の長さ (FFTサイズに合わせる)。
+ * @return 生成されたインパルス列 (ShortArray)。
+ */
+private fun generateImpulseTrainShort(length: Int): ShortArray {
+    // Logcatに出力して、関数が呼ばれたことを確認
+    Log.d(TAG, "generateImpulseTrainShort: 開始 length=$length, period=$IMPULSE_PERIOD")
+    // 指定された長さで ShortArray を作成 (要素はデフォルトで 0)
+    val impulseTrain = ShortArray(length)
+    // 定数で定義された Float の振幅 (IMPULSE_AMPLITUDE) を Short 型に変換します。
+    // 安全のため Int を経由し、Short 型の最小値/最大値の範囲内に収まるように coerceIn を使います。
+    // (今回の振幅 16384 は Short の範囲内なので、coerceIn は実質的に影響しませんが、安全策です)
+    val amplitudeShort = IMPULSE_AMPLITUDE.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+    // 変換後の Short 値をログに出力して確認
+    Log.d(TAG, "generateImpulseTrainShort: amplitudeShort=$amplitudeShort")
+
+    // 配列のインデックスが周期(IMPULSE_PERIOD)の倍数となる位置に振幅を設定します。
+    // 例: i = 0, 1023, 2046, ...
+    // 'step' を使って、周期ごとにインデックスを増やしながらループします。
+    for (i in 0 until length step IMPULSE_PERIOD) {
+        // 配列のインデックスが範囲内にあるか一応確認します (ほぼ不要ですが念のため)。
+        if (i < impulseTrain.size) {
+            // 配列の該当する位置に、計算した Short 型の振幅値を設定します。
+            impulseTrain[i] = amplitudeShort
+        }
+    }
+    // 完了ログを出力
+    Log.d(TAG, "generateImpulseTrainShort: 完了")
+    // 生成した ShortArray (インパルス列データ) を関数の結果として返します。
+    return impulseTrain
+}
+
+// --- 正規化関数の変更 ---04181647追加
+/**
+ * FFTを使用して2つの信号間の相互相関を計算する関数。
+ * 相互相関 Rxy[m] = IFFT( FFT(x[n]) * FFT(y[-n])^* ) を計算する。
+ * ここでは y[-n] の代わりに y[n] を使い、FFT(y[n]) の共役を取ることで同等の結果を得る。
+ * @param signal1 1つ目の信号 (ShortArray、例: 録音データ)。
+ * @param signal2 2つ目の信号 (FloatArray、例: インパルス列)。FFTサイズに合わせられている前提。
+ * @return 相互相関結果 (FloatArray)、計算失敗時はnull。
+ */
+private suspend fun calculateCrossCorrelationFFT(signal1: ShortArray, signal2: FloatArray): FloatArray? = withContext(Dispatchers.Default) { // 計算量の多い処理はDefaultディスパッチャで
+    Log.d(TAG, "calculateCrossCorrelationFFT: 開始 signal1.size=${signal1.size}, signal2.size=${signal2.size}, FFT_SIZE=$FFT_SIZE")
+    // --- 入力チェック ---
+    if (signal1.isEmpty() || signal2.isEmpty()) {
+        Log.e(TAG, "calculateCrossCorrelationFFT: 入力信号が空です")
+        return@withContext null
+    }
+    // signal2の長さがFFTサイズと一致するか確認 (前提条件)
+    if (signal2.size != FFT_SIZE) {
+        Log.e(TAG, "calculateCrossCorrelationFFT: signal2の長さ(${signal2.size})がFFT_SIZE(${FFT_SIZE})と異なります。")
+        return@withContext null
+    }
+    // FFTサイズがsignal1の長さ以上か確認 (ゼロパディングのため)
+    if (FFT_SIZE < signal1.size) {
+        Log.e(TAG, "calculateCrossCorrelationFFT: FFT_SIZE(${FFT_SIZE}) が signal1 の長さ(${signal1.size}) より小さいです。相互相関計算には通常もっと大きいサイズが必要です。")
+        // 相互相関では N >= L+M-1 の長さが必要 (L=signal1長, M=signal2長)
+        return@withContext null
+    }
+
+    try {
+        // --- FFT準備 ---
+        // JTransforms用のFFTインスタンスを作成 (FFTサイズを指定)
+        val fft = FloatFFT_1D(FFT_SIZE.toLong()) // ★★★ JTransformsのクラス ★★★
+
+        // --- signal1のFFT ---
+        // ShortArrayからFloatArrayに変換し、FFTサイズに合わせてゼロパディング
+        val fftData1 = FloatArray(FFT_SIZE) { i ->
+            if (i < signal1.size) signal1[i].toFloat() else 0.0f
+        }
+        Log.d(TAG, "calculateCrossCorrelationFFT: signal1 FFT実行")
+        fft.realForward(fftData1) // in-place FFT: fftData1の内容がFFT結果で上書きされる
+
+        // --- signal2のFFT ---
+        // signal2 は既に FloatArray で FFTサイズなのでコピーして使用
+        val fftData2 = signal2.copyOf() // realForwardはin-placeなので元データを壊さないようにコピー
+        Log.d(TAG, "calculateCrossCorrelationFFT: signal2 FFT実行")
+        fft.realForward(fftData2) // in-place FFT
+
+        // --- signal2 FFT結果の複素共役計算 ---
+        Log.d(TAG, "calculateCrossCorrelationFFT: signal2 FFT結果の複素共役計算")
+        // JTransformsのrealForwardの結果形式: [Re(0), Re(N/2), Re(1), Im(1), ..., Re(N/2-1), Im(N/2-1)]
+        // 複素共役は虚部の符号を反転させる
+        for (k in 1 until FFT_SIZE / 2) {
+            // Im(k) は インデックス 2*k + 1 に格納されている
+            fftData2[2 * k + 1] = -fftData2[2 * k + 1]
+        }
+        // DC成分 (インデックス0) とナイキスト周波数成分 (インデックス1) は実数なので操作不要
+
+        // --- 周波数領域での乗算: R[k] = FFT(signal1)[k] * FFT(signal2)^*[k] ---
+        Log.d(TAG, "calculateCrossCorrelationFFT: 周波数領域での複素数乗算")
+        val correlationSpectrum = FloatArray(FFT_SIZE) // 乗算結果を格納する配列
+        // DC成分 (k=0): 実数同士の乗算
+        correlationSpectrum[0] = fftData1[0] * fftData2[0]
+        // ナイキスト周波数成分 (k=N/2): 実数同士の乗算
+        correlationSpectrum[1] = fftData1[1] * fftData2[1]
+        // その他の周波数成分 (k = 1 から N/2 - 1)
+        for (k in 1 until FFT_SIZE / 2) {
+            val idxReal = 2 * k       // 実部のインデックス
+            val idxImag = 2 * k + 1   // 虚部のインデックス
+
+            val x_re = fftData1[idxReal]    // signal1の実部 Re(Xk)
+            val x_im = fftData1[idxImag]    // signal1の虚部 Im(Xk)
+            val y_conj_re = fftData2[idxReal] // signal2共役の実部 Re(Yk*)
+            val y_conj_im = fftData2[idxImag] // signal2共役の虚部 Im(Yk*)
+
+            // 複素数乗算: (a + ib) * (c + id) = (ac - bd) + i(ad + bc)
+            // ここでは Yk* なので d は既に -Im(Yk) となっていることに注意 (計算はそのまま)
+            correlationSpectrum[idxReal] = x_re * y_conj_re - x_im * y_conj_im       // 結果の実部
+            correlationSpectrum[idxImag] = x_re * y_conj_im + x_im * y_conj_re       // 結果の虚部
+        }
+
+        // --- 逆FFT: correlation = IFFT(correlationSpectrum) ---
+        Log.d(TAG, "calculateCrossCorrelationFFT: 逆FFT実行")
+        // realInverseもin-placeなので、correlationSpectrumが逆FFT結果で上書きされる
+        // 第2引数 `true` は、FFT->IFFTで元のスケールに戻すための 1/N スケーリングを有効にすることを意味する
+        fft.realInverse(correlationSpectrum, true)
+
+        Log.d(TAG, "calculateCrossCorrelationFFT: 完了")
+        // correlationSpectrum 配列に時間領域の相互相関の結果が格納されている
+        return@withContext correlationSpectrum
+
+    } catch (e: OutOfMemoryError) {
+        // FFTサイズが大きい場合に発生する可能性
+        Log.e(TAG, "calculateCrossCorrelationFFT: メモリ不足エラー。FFT_SIZEが大きすぎる可能性があります。", e)
+        return@withContext null
+    } catch (e: Exception) {
+        // その他の予期せぬエラー (JTransforms内部エラーなど)
+        Log.e(TAG, "calculateCrossCorrelationFFT: FFT/IFFT 計算中にエラー: ${e.message}", e)
+        return@withContext null // エラー発生時はnullを返す
+    }
+}
+
+/**
+ * 相互相関結果を、結果全体のエネルギー(二乗和の平方根、L2ノルム)で正規化する関数。
+ * 結果の各要素の絶対値は必ず 1.0 以下になる。
+ * @param correlationData 相互相関の結果 (FloatArray)。
+ * @return 正規化された相互相関結果 (FloatArray)。
+ */
+private fun normalizeCorrelation(correlationData: FloatArray): FloatArray {
+    Log.d(TAG, "normalizeCorrelation: 開始 data.size=${correlationData.size}")
+    if (correlationData.isEmpty()) {
+        Log.w(TAG, "normalizeCorrelation: データが空です")
+        return FloatArray(0) // 空の配列を返す
+    }
+
+    // 1. エネルギー（全要素の二乗和）を計算 (Doubleで)
+    var sumOfSquares: Double = 0.0
+    for (value in correlationData) {
+        sumOfSquares += value.toDouble() * value.toDouble()
+    }
+    Log.d(TAG, "normalizeCorrelation: Sum of Squares = $sumOfSquares")
+
+    // 2. エネルギーの平方根（L2ノルム）を計算
+    val normFactor = sqrt(sumOfSquares) // kotlin.math.sqrt
+    Log.d(TAG, "normalizeCorrelation: Normalization Factor (sqrt of sum of squares) = $normFactor")
+
+    // 3. ゼロ除算回避
+    return if (abs(normFactor) < 1e-9) {
+        Log.w(TAG, "normalizeCorrelation: 正規化係数がほぼゼロのため、ゼロ配列を返します")
+        FloatArray(correlationData.size)
+    } else {
+    // 4. 各要素を正規化係数で割る
+        val normalizedData = FloatArray(correlationData.size) { i ->
+            (correlationData[i].toDouble() / normFactor).toFloat()
+        }
+        Log.d(TAG, "normalizeCorrelation: 完了")
+        normalizedData
+    }
+}
+/**
+ * 正規化された相互相関結果を表示用に整形する関数。
+ * ピーク値とその位置（時間）を表示する。
+ * @param normalizedData 正規化された相互相関データ (FloatArray)。
+ * @return 表示用の文字列。
+ */
+private fun formatCorrelationResult(normalizedData: FloatArray): String {
+    Log.d(TAG, "formatCorrelationResult: 開始 data.size=${normalizedData.size}")
+    if (normalizedData.isEmpty()) {
+        return "結果: データがありません。" // データが空ならここで早期リターン
+    }
+
+    // --- ピーク値・最小値の探索用変数を初期化 ---
+    var peakValue = normalizedData[0] // 配列が空でないことを確認済みなので最初の要素で初期化
+    var peakIndex = 0
+    var maxAbsValue = abs(normalizedData[0])
+    var minValue = normalizedData[0]
+    var minIndex = 0
+
+    // --- 全データを走査して最大最小を見つける ---
+    // (forEachIndexed でも良いが、単純なループでも可)
+    for (index in 1 until normalizedData.size) { // 2番目の要素から比較開始
+        val value = normalizedData[index]
+        // 絶対値最大の点を更新
+        val absVal = abs(value)
+        if (absVal > maxAbsValue) {
+            maxAbsValue = absVal
+            peakValue = value
+            peakIndex = index
+        }
+        // 最小値（最も負の値）を更新
+        if (value < minValue) {
+            minValue = value
+            minIndex = index
+        }
+    }
+
+    // --- ★★★ ループの外で結果文字列を生成 ★★★ ---
+    val sb = StringBuilder()
+    sb.append("--- 相関結果 (正規化済み) ---\n")
+    sb.append("データ点数: ${normalizedData.size}\n")
+
+    // ピーク情報の追加
+    if (peakIndex != -1) { // (初期化しているので -1 チェックは不要かも)
+        val peakTimeMs = peakIndex.toDouble() / SAMPLE_RATE * 1000.0
+        sb.append("ピーク(絶対値最大): %.4f @ %.2f ms (Index: %d)\n".format(peakValue, peakTimeMs, peakIndex))
+    } else {
+        sb.append("ピーク検出不能\n") // 基本的に発生しないはず
+    }
+
+    // 最小値情報の追加
+    if (minIndex != -1) { // (初期化しているので -1 チェックは不要かも)
+        val minTimeMs = minIndex.toDouble() / SAMPLE_RATE * 1000.0
+        sb.append("最小値(最負ピーク): %.4f @ %.2f ms (Index: %d)".format(minValue, minTimeMs, minIndex))
+    } else {
+        sb.append("最小値検出不能") // 基本的に発生しないはず
+    }
+
+    Log.d(TAG, "formatCorrelationResult: 完了")
+    // ★★★ 関数の最後に return 文 ★★★
+    return sb.toString()
+} // ← 関数の終わりには値を返す必要がある
+
+// ★★★ Cコードのロジックを Kotlin で実装 ★★★
+/**
+ * 時間領域で正規化相互相関（係数）を計算する関数。
+ * C コードの correlation 関数のロジックを再現。計算量は O(N^2) で遅いため、テストとしての実装
+ *
+ * @param signal1 入力信号1 (ShortArray)。 Cコードの cfftwk に相当。長さ L >= period。
+ * @param signal2 入力信号2 (FloatArray)。 Cコードの autosignal に相当。長さ M >= period。
+ * @param period 計算に使用する周期 (M系列周期など、例: 1023)。
+ * @return 各ラグにおける正規化相互相関係数の配列 (FloatArray、長さ period)。エラー時は null。
+ */
+private fun calculateNormalizedCorrelationTimeDomain(
+    signal1: ShortArray,
+    signal2: FloatArray,
+    period: Int = M_SEQ_LENGTH  // デフォルト引数として M系列周期を使用 (1023)
+): FloatArray? {
+    Log.d(TAG, "calculateNormalizedCorrelationTimeDomain: 開始 signal1=${signal1.size}, signal2=${signal2.size}, period=$period")
+
+    // 入力サイズチェック
+    if (signal1.size < period || signal2.size < period) {
+        Log.e(TAG, "calculateNormalizedCorrelationTimeDomain: 入力信号長が周期 ($period) より短い")
+        return null
+    }
+
+    val correlationResult = FloatArray(period) // 結果格納用配列 (長さ period)
+
+    try {
+        // 各ラグ i (0 から period-1) について計算
+        for (i in 0 until period) {
+            var sumB: Double = 0.0  // 分子 B の合計 (Doubleで精度確保)
+            var sumNorm1: Double = 0.0 // signal1 のエネルギー (Doubleで精度確保)
+            var sumNorm2: Double = 0.0 // signal2 のエネルギー (Doubleで精度確保)
+
+            // ウィンドウ内の積和とエネルギーを計算
+            for (k in 0 until period) {
+                // signal2 のインデックス l を計算 (Cコードの巻き込み処理を再現)
+                var l = k - (i % period) // i だけでOKのはず (Cコードでは i % Mseqperiod だったが、i<period なので)
+                if (l < 0) {
+                    l += period
+                }
+
+                // Cコードの B = (cfftwk[k].R) * (autosignal[l].R); に相当
+                // signal1 は Short なので Float に変換
+                val val1 = signal1[k].toFloat()
+                val val2 = signal2[l] // signal2 は Float
+                sumB += val1.toDouble() * val2.toDouble()
+
+                // Cコードの norm[i] += (cfftwk[k].R * cfftwk[k].R); に相当
+                sumNorm1 += val1.toDouble() * val1.toDouble()
+
+                // Cコードの norm2[i] += (autosignal[k].R * autosignal[k].R); に相当
+                // ★注意: Cコードでは autosignal[k] を使っていたが、相関の定義上は autosignal[l] の方が一般的。
+                //          ここでは C コードのロジックに合わせ autosignal[k] (signal2[k]) を使う。
+                //          もし autosignal[l] で計算したい場合は下の行を修正する。
+                sumNorm2 += signal2[k].toDouble() * signal2[k].toDouble()
+                // (もし signal2[l] で計算する場合)
+                // sumNorm2 += signal2[l].toDouble() * signal2[l].toDouble()
+            }
+
+            // Cコードの corr[i] = corr[i] / sqrt(norm[i]) / sqrt(norm2[i]); に相当
+            val normFactor1 = sqrt(sumNorm1)
+            val normFactor2 = sqrt(sumNorm2)
+
+            // ゼロ除算チェック
+            if (abs(normFactor1) < 1e-9 || abs(normFactor2) < 1e-9) {
+                correlationResult[i] = 0.0f
+                // Log.w(TAG, "calculateNormalizedCorrelationTimeDomain: Lag $i でゼロ除算発生の可能性")
+            } else {
+                correlationResult[i] = (sumB / normFactor1 / normFactor2).toFloat()
+            }
+        }
+        Log.d(TAG, "calculateNormalizedCorrelationTimeDomain: 完了")
+        return correlationResult
+
+    } catch (e: Exception) {
+        Log.e(TAG, "calculateNormalizedCorrelationTimeDomain: 計算中にエラー: ${e.message}", e)
+        return null
+    }
+}
+
+// --- 時間領域相互相関関数 (長い信号対応) ---
+// longSignal (録音データなど) の全体に対して、shortSignal (M系列など) をスライドさせながら
+// 相互相関を計算し、結果を FloatArray で返します。
+// 結果の長さは通常 longSignal.size - shortSignal.size + 1 になります。
+// これが、録音データと短い参照信号の相互相関計算に使用する関数です。
+fun calculateCrossCorrelationTimeDomainFull(longSignal: ShortArray, shortSignal: FloatArray): FloatArray {
+    // 短い信号の長さが0以下の場合や、長い信号が短い信号より短い場合は相関できない
+    if (shortSignal.isEmpty() || longSignal.size < shortSignal.size) {
+        Log.e(TAG, "calculateCrossCorrelationTimeDomainFull: 入力信号の長さが不正です。longSignal.size=${longSignal.size}, shortSignal.size=${shortSignal.size}")
+        return FloatArray(0) // 結果として空の配列を返す
+    }
+
+    val n = longSignal.size // 長い信号の長さ (録音データ)
+    val m = shortSignal.size // 短い信号の長さ (M系列参照など)
+
+    // 有効な相関結果が得られる長さ (短い信号が長い信号に完全に重なる区間)
+    // 結果配列のサイズは N - M + 1 となります。
+    val resultLength = n - m + 1
+
+    val correlationResult = FloatArray(resultLength) // 相関結果を格納する配列
+
+    // スライディングウィンドウ（窓）の開始位置 j を変化させるループ
+    // j は 0 から resultLength - 1 まで動きます。
+    // 各 j は、録音データのどこから短い参照信号パターンが始まるかという「遅延」に対応します。
+    for (j in 0 until resultLength) {
+        var sumOfProducts = 0.0f // このシフト量 j における積和（相関値）
+
+        // 窓内の要素同士を掛け合わせて合計するループ
+        // k は shortSignal (参照信号) のインデックス (0 から m-1)
+        for (k in 0 until m) {
+            // longSignal の j+k 番目の要素 (窓内のデータ)
+            // と shortSignal の k 番目の要素 (参照データ) を掛け合わせる
+            // ShortArrayの要素はtoFloat()でFloatに変換する必要がある
+            sumOfProducts += longSignal[j + k].toFloat() * shortSignal[k]
+        }
+        // 計算された積和 (相関値) を、結果配列の j 番目の要素として格納
+        correlationResult[j] = sumOfProducts
+    }
+
+    // 計算された相関結果の配列を返します
+    // この配列 (correlationResult) が、グラフ化するデータ本体となります。
+    return correlationResult
+}
