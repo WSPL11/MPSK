@@ -1,0 +1,440 @@
+package com.example.graph // パッケージ名を修正
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresPermission
+import androidx.compose.foundation.Canvas // Canvasをインポート
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset // Offsetをインポート
+import androidx.compose.ui.graphics.Color // Colorをインポート
+import androidx.compose.ui.graphics.Path // Pathをインポート
+import androidx.compose.ui.graphics.drawscope.Stroke // Strokeをインポート
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import kotlin.concurrent.thread
+import kotlin.math.abs // 必要に応じて
+
+class MainActivity : ComponentActivity() {
+
+    private val TAG = "AudioRecordSample"
+
+    // --- オーディオ設定 ---
+    private val sampleRate = 44100
+    private val channelConfig = AudioFormat.CHANNEL_IN_MONO
+    private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+    private var minBufferSize = 0
+    private var bufferSizeInBytes = 0
+
+    // --- AudioRecord関連 ---
+    private var audioRecord: AudioRecord? = null
+    private var recordingThread: Thread? = null
+
+    // --- Compose UI の状態管理 ---
+    private var hasPermission by mutableStateOf(false)
+    private var isRecording by mutableStateOf(false)
+    private var statusText by mutableStateOf("待機中")
+    private var isInitialized by mutableStateOf(false)
+    // ★★★ 波形データ用 State を追加 ★★★
+    private var waveformData by mutableStateOf<List<Float>>(emptyList()) // 初期値は空リスト
+
+    // --- パーミッションリクエストランチャー ---
+    private val requestPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted: Boolean ->
+            if (granted) {
+                Log.d(TAG, "RECORD_AUDIO permission granted.")
+                hasPermission = true
+                try {
+                    initAudioRecord()
+                } catch (e: SecurityException) {
+                    Log.e(TAG, "SecurityException calling initAudioRecord after permission granted!", e)
+                    statusText = "権限処理エラー（コールバック）"
+                    hasPermission = false
+                    isInitialized = false
+                    Toast.makeText(this, "権限処理中に予期せぬエラーが発生しました", Toast.LENGTH_LONG).show()
+                }
+            } else {
+                Log.w(TAG, "RECORD_AUDIO permission denied.")
+                hasPermission = false
+                statusText = "マイク権限が拒否されました"
+                Toast.makeText(this, "マイク権限が必要です", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        setContent {
+            MaterialTheme {
+                AudioRecordScreen(
+                    hasPermission = hasPermission,
+                    isRecording = isRecording,
+                    statusText = statusText,
+                    isInitialized = isInitialized,
+                    waveformData = waveformData, // ★★★ 波形データを渡す ★★★
+                    onStartClick = { startRecording() },
+                    onStopClick = { stopRecording() },
+                    onRequestPermission = { checkAndRequestPermission() }
+                )
+            }
+        }
+        checkAndRequestPermission()
+    }
+
+    // --- UI定義 (Compose) ---
+    @Composable
+    fun AudioRecordScreen(
+        hasPermission: Boolean,
+        isRecording: Boolean,
+        statusText: String,
+        isInitialized: Boolean,
+        waveformData: List<Float>, // ★★★ 波形データを受け取る ★★★
+        onStartClick: () -> Unit,
+        onStopClick: () -> Unit,
+        onRequestPermission: () -> Unit
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            // verticalArrangement = Arrangement.Center // 中央揃えを少し変更
+        ) {
+            Spacer(modifier = Modifier.height(32.dp)) // 上部にスペース
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Button(onClick = onStartClick, enabled = hasPermission && isInitialized && !isRecording) {
+                    Text("録音開始")
+                }
+                Button(onClick = onStopClick, enabled = isRecording) {
+                    Text("録音停止")
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(text = statusText, fontSize = 18.sp, textAlign = TextAlign.Center)
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            // ★★★ 波形グラフ表示 Composable を追加 ★★★
+            WaveformGraph(
+                data = waveformData,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(150.dp) // グラフの高さを指定
+            )
+            // ★★★ ここまで ★★★
+
+            if (!hasPermission) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "マイクを使用するには権限が必要です。\nアプリ設定から許可してください。",
+                    color = Color.Red,
+                    textAlign = TextAlign.Center
+                )
+            }
+            Spacer(modifier = Modifier.weight(1f)) // 残りのスペースを埋める
+        }
+    }
+
+    // ★★★ 波形グラフ描画 Composable ★★★
+    @Composable
+    fun WaveformGraph(data: List<Float>, modifier: Modifier = Modifier) {
+        val primaryColor = MaterialTheme.colorScheme.primary // テーマの色を使う
+        val visualGain = 4.0f //
+
+        Canvas(modifier = modifier) {
+            val canvasWidth = size.width
+            val canvasHeight = size.height
+            val middleY = canvasHeight / 2f
+            // --- 中央線を描画 ---
+            drawLine(
+                color = Color.Gray,
+                start = Offset(0f, middleY),
+                end = Offset(canvasWidth, middleY),
+                strokeWidth = 1f
+            )
+            if (data.isNotEmpty()) {
+                val path = Path()
+                val dx = if (data.size > 1) canvasWidth / (data.size - 1) else canvasWidth
+
+                // 最初の点 (ゲインを適用し、はみ出さないように coerceIn で制限)
+                val startY = middleY - (data[0] * visualGain).coerceIn(-1f, 1f) * middleY
+                path.moveTo(0f, startY)
+
+                // 各データ点をつなぐ
+                for (i in 1 until data.size) {
+                    val x = i * dx
+                    // ★★★ Y座標計算時に visualGain を掛ける ★★★
+                    // coerceIn で増幅後も -1.0f ~ 1.0f の範囲にクリッピング（制限）する
+                    val y = middleY - (data[i] * visualGain).coerceIn(-1f, 1f) * middleY
+                    path.lineTo(x, y)
+                }
+
+                // パスを描画
+                drawPath(
+                    path = path,
+                    color = primaryColor, // 線の色
+                    style = Stroke(width = 4f) // 線の太さ
+                )
+            } else {
+                // データがない場合は中央線だけ描画
+                drawLine(
+                    color = Color.Gray,
+                    start = Offset(0f, middleY),
+                    end = Offset(canvasWidth, middleY),
+                    strokeWidth = 1f
+                )
+            }
+        }
+    }
+
+
+    // --- 権限関連 (変更なし) ---
+    private fun checkAndRequestPermission() {
+        when {
+            ContextCompat.checkSelfPermission(
+                this, Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED -> {
+                if (!hasPermission) {
+                    Log.d(TAG, "Permission already granted.")
+                    hasPermission = true
+                    initAudioRecord()
+                } else if (!isInitialized && audioRecord == null) {
+                    initAudioRecord()
+                }
+            }
+            shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO) -> {
+                Log.i(TAG, "Showing permission rationale.")
+                hasPermission = false
+                statusText = "マイク権限が必要です"
+                Toast.makeText(this, "録音にはマイク権限の許可が必要です", Toast.LENGTH_LONG).show()
+                requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+            else -> {
+                Log.d(TAG, "Requesting permission.")
+                hasPermission = false
+                requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+    }
+
+    // --- AudioRecord初期化 (変更なし) ---
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
+    private fun initAudioRecord() {
+        if (audioRecord != null || !hasPermission) {
+            return
+        }
+        minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+        if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
+            Log.e(TAG, "Invalid AudioRecord parameters.")
+            statusText = "AudioRecordパラメータエラー"
+            isInitialized = false
+            audioRecord = null
+            return
+        }
+        // グラフ表示のため、少し多めにバッファを取る (例: 4倍 or 0.1秒分など調整可能)
+        // bufferSizeInBytes = minBufferSize * 4
+        bufferSizeInBytes = minBufferSize * 2 // まずは2倍で試す
+        Log.d(TAG, "minBufferSize: $minBufferSize, used bufferSize: $bufferSizeInBytes")
+
+        try {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                Log.e(TAG, "FATAL: Permission check failed unexpectedly inside initAudioRecord!")
+                hasPermission = false
+                statusText = "マイク権限エラー（内部確認）"
+                isInitialized = false
+                return
+            }
+            audioRecord = AudioRecord(
+                MediaRecorder.AudioSource.MIC, sampleRate, channelConfig, audioFormat, bufferSizeInBytes
+            )
+            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+                Log.e(TAG, "AudioRecord failed to initialize.")
+                statusText = "AudioRecord初期化失敗"
+                isInitialized = false
+                audioRecord?.release()
+                audioRecord = null
+            } else {
+                Log.d(TAG, "AudioRecord initialized successfully.")
+                statusText = if (!isRecording) "初期化完了、待機中" else statusText
+                isInitialized = true
+            }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "SecurityException initializing AudioRecord", e)
+            statusText = "初期化エラー: 権限がありません"
+            isInitialized = false
+            hasPermission = false
+            audioRecord = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception initializing AudioRecord", e)
+            statusText = "初期化エラー: ${e.message}"
+            isInitialized = false
+            audioRecord = null
+        }
+    }
+
+    // --- 録音開始 (変更なし) ---
+    private fun startRecording() {
+        if (!hasPermission) {
+            Log.w(TAG, "Start recording denied. Missing permission.")
+            statusText = "マイク権限がありません"
+            checkAndRequestPermission()
+            return
+        }
+        if (!isInitialized || audioRecord == null) {
+            Log.w(TAG, "Start recording denied. AudioRecord not initialized.")
+            statusText = "AudioRecord未初期化"
+            // try-catch は initAudioRecord 呼び出し元 (requestPermissionLauncher) に追加済み
+            initAudioRecord()
+            return
+        }
+        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+            Log.e(TAG, "Start recording failed. AudioRecord not in initialized state.")
+            statusText = "AudioRecord状態異常"
+            audioRecord?.release()
+            audioRecord = null
+            isInitialized = false
+            checkAndRequestPermission()
+            return
+        }
+        if (isRecording) {
+            Log.w(TAG, "Already recording.")
+            return
+        }
+        try {
+            audioRecord?.startRecording()
+            isRecording = true
+            statusText = "録音中..."
+            Log.d(TAG, "Recording started.")
+            recordingThread = thread(start = true) {
+                processAudioStream()
+            }
+        } catch (e: IllegalStateException) {
+            Log.e(TAG, "Failed to start recording", e)
+            statusText = "録音開始エラー"
+            isRecording = false
+        }
+    }
+
+    // --- 音声データ処理 (★Float変換とState更新を追加★) ---
+    private fun processAudioStream() {
+        Log.d(TAG, "Audio processing thread started.")
+        // ★★★ Short配列で読み込むように変更 ★★★
+        val audioDataShort = ShortArray(bufferSizeInBytes / 2) // Shortは2バイト
+        Log.d(TAG, "Entering processAudioStream loop. isRecording=$isRecording")
+        while (isRecording) {
+            // ★★★ read() のターゲットを ShortArray に変更 ★★★
+            val shortsRead = audioRecord?.read(audioDataShort, 0, audioDataShort.size) ?: -1
+            Log.d(TAG, "audioRecord.read returned: $shortsRead") // ★追加★
+
+            if (shortsRead < 0) {
+                Log.e(TAG, "Read() error occurred: $shortsRead") // エラーログを確認
+                Log.e(TAG, "Read() error: $shortsRead")
+                runOnUiThread {
+                    statusText = when(shortsRead) {
+                        AudioRecord.ERROR_INVALID_OPERATION -> "読込エラー: 不正操作"
+                        AudioRecord.ERROR_BAD_VALUE -> "読込エラー: 不正引数"
+                        AudioRecord.ERROR_DEAD_OBJECT -> "読込エラー: オブジェクト死亡"
+                        else -> "読込エラー: 不明 ($shortsRead)"
+                    }
+                    stopRecordingInternal()
+                }
+                break
+            } else if (shortsRead > 0) {// 成功した場合
+                Log.d(TAG,"Successfully read $shortsRead shorts.") // ★追加★
+                // ★★★ Short 配列を Float リスト (-1.0f ~ 1.0f) に変換 ★★★
+                val floatList = ArrayList<Float>(shortsRead) // 高速化のため初期サイズ指定
+                for (i in 0 until shortsRead) {
+                    // Short.MAX_VALUE (32767) で割って正規化
+                    val normalized = audioDataShort[i].toFloat() / Short.MAX_VALUE.toFloat()
+                    // 念のため範囲内に収める
+                    floatList.add(normalized.coerceIn(-1f, 1f))
+                }
+
+                // ★★★ UIスレッドで Compose State を更新 ★★★
+                runOnUiThread {
+                    waveformData = floatList // 新しいデータで状態を更新 -> 再描画がトリガーされる
+                }
+                // ログは必要なら出す (出しすぎ注意)
+                // Log.v(TAG, "Read $shortsRead shorts, converted to ${floatList.size} floats")
+
+            } else {
+                Log.v(TAG, "Read 0 shorts")
+            }
+        }
+        Log.d(TAG, "Audio processing thread finished.")
+    }
+
+    // --- 録音停止 (★波形データクリア追加★) ---
+    private fun stopRecording() {
+        stopRecordingInternal()
+        // ★★★ 停止時に波形データをクリア ★★★
+        waveformData = emptyList()
+    }
+
+    // --- 内部的な停止処理 (変更なし) ---
+    private fun stopRecordingInternal() {
+        if (!isRecording && audioRecord?.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+            return
+        }
+        Log.d(TAG, "Stopping recording internal...")
+        isRecording = false
+        try {
+            recordingThread?.join(500)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            Log.e(TAG, "Interrupted while waiting for recording thread", e)
+        }
+        recordingThread = null
+        if (audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+            try {
+                audioRecord?.stop()
+                Log.d(TAG, "AudioRecord stopped successfully.")
+                if (!statusText.startsWith("読込エラー")) {
+                    statusText = "停止"
+                }
+            } catch (e: IllegalStateException) {
+                Log.e(TAG, "Failed to stop AudioRecord", e)
+                statusText = "停止エラー"
+            }
+        } else {
+            Log.w(TAG, "AudioRecord was not in recording state when stop was called.")
+            if (!statusText.startsWith("読込エラー") && !statusText.contains("エラー")) {
+                if (isInitialized) {
+                    statusText = "停止"
+                }
+            }
+        }
+        Log.d(TAG, "Recording fully stopped internal.")
+    }
+
+    // --- リソース解放 (変更なし) ---
+    override fun onDestroy() {
+        super.onDestroy()
+        Log.d(TAG, "onDestroy called.")
+        if (isRecording) {
+            stopRecordingInternal()
+        }
+        audioRecord?.release()
+        audioRecord = null
+        isInitialized = false
+        Log.d(TAG, "AudioRecord released.")
+    }
+}
