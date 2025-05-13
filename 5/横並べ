@@ -1,0 +1,679 @@
+package com.example.graph
+
+// ★★★ 必要な Import 文 ★★★
+import android.Manifest
+import android.content.pm.PackageManager
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresPermission
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope // nativeCanvas アクセスに必要
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas // nativeCanvas へのアクセスに必要
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.compose.ui.platform.LocalDensity
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import androidx.compose.ui.text.style.TextOverflow
+import kotlinx.coroutines.Job // Job をインポート
+import kotlinx.coroutines.cancel // cancel をインポート (cancelAndJoinから変更)
+import kotlinx.coroutines.delay // delay をインポート
+import kotlinx.coroutines.isActive // isActive をインポート
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.concurrent.thread // 'thread' のための import
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.floor
+import kotlin.math.log10
+import kotlin.math.min
+import kotlin.math.pow
+import kotlin.math.sqrt
+
+
+// ★★★ M系列データを定数として定義 ★★★
+private val M_SEQUENCE_RAW_DATA: List<Float> = listOf(
+    1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f,
+    1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f,
+    1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f,
+    -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f,
+    -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f,
+    1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f,
+    1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f,
+    -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f,
+    -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f,
+    -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f,
+    1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f
+)
+// FloatArray に変換しておく (効率のため)
+private val M_SEQUENCE_FLOAT_ARRAY = M_SEQUENCE_RAW_DATA.toFloatArray()
+
+// dB計算用の定数
+private const val MIN_DB_LEVEL = -120.0f // dB表示の下限値
+// ★★★ レベル評価の閾値 (dBFS) (2025/05/07/AM0:31追加) ★★★
+private const val LEVEL_THRESHOLD_LOW = -40.0f // これ未満だと「小さい」
+private const val LEVEL_THRESHOLD_IDEAL_LOW = -20.0f // これ以上が「理想的」の下限
+private const val LEVEL_THRESHOLD_IDEAL_HIGH = -6.0f // これ未満が「理想的」の上限
+private const val LEVEL_THRESHOLD_HIGH = -3.0f // これ以上だと「大きい」
+
+class MainActivity : ComponentActivity() {
+
+    private val TAG = "AudioRecordSample"
+
+    // --- オーディオ設定 ---
+    private val sampleRate = 44100
+    private val channelConfig = AudioFormat.CHANNEL_IN_MONO
+    private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+    private var minBufferSize = 0
+    private var bufferSizeInBytes = 0
+
+    // --- AudioRecord関連 ---
+    private var audioRecord: AudioRecord? = null
+    private var recordingThread: Thread? = null
+
+    // --- データバッファと結果 ---
+    private val recordedAudioBuffer = mutableListOf<Short>()
+    private var correlationResult by mutableStateOf<List<Float>>(emptyList())
+
+    // ★★★ 定期計算用コルーチン Job ★★★
+    private var calculationCoroutineJob: Job? = null
+    private val calculationIntervalMs = 2000L
+    private val calculationDataDurationSec = 2
+
+    // --- Compose UI の状態管理 ---
+    private var hasPermission by mutableStateOf(false)
+    private var isRecording by mutableStateOf(false)
+    private var statusText by mutableStateOf("待機中")
+    private var isInitialized by mutableStateOf(false)
+    private var currentDbLevel by mutableStateOf(MIN_DB_LEVEL)
+    private var levelFeedbackText by mutableStateOf("")
+
+    // --- パーミッションリクエストランチャー ---
+    private val requestPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted: Boolean ->
+            if (granted) {
+                Log.d(TAG, "RECORD_AUDIO permission granted.")
+                hasPermission = true
+                try { initAudioRecord() }
+                catch (e: SecurityException) { Log.e(TAG, "SecurityException calling initAudioRecord after permission granted!", e); statusText = "権限処理エラー（コールバック）"; hasPermission = false; isInitialized = false; Toast.makeText(this, "権限処理中に予期せぬエラーが発生しました", Toast.LENGTH_LONG).show()}
+            } else { Log.w(TAG, "RECORD_AUDIO permission denied."); hasPermission = false; statusText = "マイク権限が拒否されました"; Toast.makeText(this, "マイク権限が必要です", Toast.LENGTH_SHORT).show() }
+        }
+
+    // --- Activity Lifecycle ---
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            val scope = rememberCoroutineScope()
+            MaterialTheme {
+                CorrelationScreen(
+                    hasPermission = hasPermission,
+                    isRecording = isRecording,
+                    statusText = statusText,
+                    isInitialized = isInitialized,
+                    correlationData = correlationResult,
+                    currentDbLevel = currentDbLevel,
+                    levelFeedbackText = levelFeedbackText,
+                    sampleRate = sampleRate,
+                    mSequenceLength = M_SEQUENCE_FLOAT_ARRAY.size,
+                    onStartClick = { startRecordingAndPeriodicCalculation(scope) },
+                    onStopClick = { stopRecordingAndCalculation() },
+                    onRequestPermission = { checkAndRequestPermission() }
+                )
+            }
+        }
+        checkAndRequestPermission()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        Log.d(TAG, "onDestroy called.")
+        stopRecordingAndCalculation()
+        audioRecord?.release()
+        audioRecord = null
+        isInitialized = false
+        Log.d(TAG, "AudioRecord released.")
+    }
+
+    // --- UI定義 (Compose) ---
+    @Composable
+    fun CorrelationScreen(
+        hasPermission: Boolean,
+        isRecording: Boolean,
+        statusText: String,
+        isInitialized: Boolean,
+        correlationData: List<Float>,
+        currentDbLevel: Float,
+        levelFeedbackText: String,
+        sampleRate: Int,
+        mSequenceLength: Int,
+        onStartClick: () -> Unit,
+        onStopClick: () -> Unit,
+        onRequestPermission: () -> Unit
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {  Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    onClick = onStartClick,
+                    enabled = hasPermission && isInitialized && !isRecording,
+                    modifier = Modifier.weight(1f).height(46.dp) // ボタンの高さは以前の調整のまま
+                ) {
+                    // ★★★ 「録音開始」テキストの文字サイズを指定 ★★★
+                    Text(
+                        text = "録音開始",
+                        fontSize = 24.sp
+                    )
+                }
+                Button(
+                    onClick = onStopClick,
+                    enabled = isRecording,
+                    modifier = Modifier.weight(1f).height(46.dp) // ボタンの高さは以前の調整のまま
+                ) {
+                    // ★★★ 「停止」テキストの文字サイズを指定 ★★★
+                    Text(
+                        text = "停止",
+                        fontSize = 24.sp
+                    )
+                }
+
+            }
+
+            // ★★★ ボタンと新しいテキストRowの間にスペーサーを配置 (高さを調整してください) ★★★
+            Spacer(modifier = Modifier.height(8.dp)) // 例: 8dpのスペース
+
+            // ★★★ 3つのテキストを横一列に均等配置する Row ★★★
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 140.dp) , // Rowを画面幅いっぱいに広げる
+                verticalAlignment = Alignment.CenterVertically // テキストを垂直方向中央に揃える (または Alignment.Top, Alignment.Bottom)
+            ) {
+                // 1. ステータステキスト
+                Text(
+                    text = statusText,
+                    fontSize = 24.sp, // 元のフォントサイズ
+                    textAlign = TextAlign.Center, // 各テキストブロック内で中央揃え
+                    modifier = Modifier.weight(1f), // 幅を均等に割り当てる (1/3)
+                    maxLines = 2, // 必要に応じて最大行数を設定
+                    overflow = TextOverflow.Ellipsis // はみ出す場合は省略記号
+                )
+
+                // 2. 入力レベルテキスト
+                Text(
+                    text = "入力レベル: ${String.format("%.1f", currentDbLevel)} dBFS",
+                    fontSize = 24.sp, // 元のフォントサイズ
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.weight(1f), // 幅を均等に割り当てる (1/3)
+                    maxLines = 1, // 1行で表示させたい場合など
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                // 3. レベルフィードバックテキスト
+                Text(
+                    text = if (levelFeedbackText.isNotBlank()) levelFeedbackText else " ",
+                    fontSize = 20.sp,
+                    color = when {
+                        levelFeedbackText.contains("小さい") -> Color.Blue
+                        levelFeedbackText.contains("理想的") -> MaterialTheme.colorScheme.primary
+                        levelFeedbackText.contains("大きい") -> Color.Red
+                        else -> Color.Black
+                    },
+                    textAlign = TextAlign.End, // ★★★ TextAlign.Center から TextAlign.End に変更 ★★★
+                    modifier = Modifier
+                        .weight(1f) // 幅は均等なまま
+                        .heightIn(min = (24.sp.value * LocalDensity.current.fontScale * 1.2f).dp ), // 高さを合わせるためのもの
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            // ★★★ 新しいテキストRowとグラフの間にスペーサーを配置 (高さを調整してください) ★★★
+            Spacer(modifier = Modifier.height(30.dp)) // 例: 8dpのスペース (元の0.dpのSpacerは削除)
+
+            CorrelationGraph(result = correlationData, sampleRate = sampleRate, mSequenceLength = mSequenceLength, modifier = Modifier.fillMaxWidth().height(520.dp))
+            if (!hasPermission) { Spacer(modifier = Modifier.height(8.dp)); Text(text = "マイクを使用するには権限が必要です。\nアプリ設定から許可してください。", color = Color.Red, textAlign = TextAlign.Center) }
+            Spacer(modifier = Modifier.weight(1f))
+        }
+    }
+
+    // ★★★ 相関グラフ描画 Composable (変更なし) ★★★
+    @Composable
+    fun CorrelationGraph(
+        result: List<Float>,
+        sampleRate: Int,
+        mSequenceLength: Int,
+        modifier: Modifier = Modifier
+    ) {
+        val primaryColor = MaterialTheme.colorScheme.primary
+        val orangeColor = Color(0xFFFFA500)
+
+        var peakInfo by remember(result) { mutableStateOf<Pair<Int, Float>?>(null) }
+
+        val resources = LocalContext.current.resources
+        val density = resources.displayMetrics.density
+        val labelTextSizePx = remember { 28.sp.toPx(density, resources.configuration.fontScale) }
+        val tickLabelTextSizePx = remember { 28.sp.toPx(density, resources.configuration.fontScale) }
+
+        val axisLabelPaint = remember { Paint().apply { color = android.graphics.Color.BLACK; textAlign = Paint.Align.CENTER; textSize = labelTextSizePx } }
+        val tickLabelPaint = remember { Paint().apply { color = android.graphics.Color.DKGRAY; textAlign = Paint.Align.CENTER; textSize = tickLabelTextSizePx } }
+        val yAxisValueLabelPaint = remember { Paint().apply { color = android.graphics.Color.DKGRAY; textAlign = Paint.Align.RIGHT; textSize = tickLabelTextSizePx } }
+        val yAxisLabelPaint = remember { Paint().apply { color = android.graphics.Color.BLACK; textAlign = Paint.Align.CENTER; textSize = labelTextSizePx } }
+        val peakValuePaint = remember { Paint().apply { color = orangeColor.toArgb(); textAlign = Paint.Align.LEFT; textSize = tickLabelTextSizePx } }
+
+        LaunchedEffect(result) {
+            if (result.isNotEmpty()) {
+                var maxVal = -Float.MAX_VALUE; var maxIndex = -1
+                for (i in result.indices) { if (result[i] > maxVal) { maxVal = result[i]; maxIndex = i } }
+                if (maxIndex != -1) {
+                    peakInfo = Pair(maxIndex, maxVal)
+                    val delayMs = (maxIndex.toFloat() / sampleRate.toFloat()) * 1000f
+                    Log.d(TAG, "Peak detected within 0-50ms at index $maxIndex (value: $maxVal), lag: ${String.format("%.2f", delayMs)} ms")
+                } else { peakInfo = null }
+            } else { peakInfo = null }
+        }
+
+        Canvas(modifier = modifier) {
+            val canvasWidth = size.width
+            val canvasHeight = size.height
+            val bottomPadding = labelTextSizePx * 2f
+            val leftPadding = labelTextSizePx * 4.2f
+            val topPadding = labelTextSizePx * 1f
+            val rightPadding = labelTextSizePx * 2f
+            val graphContentLeft = leftPadding
+            val graphContentTop = topPadding
+            val graphContentRight = canvasWidth - rightPadding
+            val graphContentBottom = canvasHeight - bottomPadding
+            val graphContentWidth = graphContentRight - graphContentLeft
+            val graphContentHeight = graphContentBottom - graphContentTop
+            val graphMiddleY = graphContentTop + graphContentHeight / 2f//正のみになるため変えない
+            val yScaleFactor = graphContentHeight / 2f//変えない
+            val maxLagMsGraph = 50f
+
+            val xLabelText = "時間差 (ms)"
+            drawContext.canvas.nativeCanvas.drawText(xLabelText, graphContentLeft + graphContentWidth / 2f, canvasHeight - axisLabelPaint.descent() - (bottomPadding - labelTextSizePx * 2.5f)/2f , axisLabelPaint)
+            val yLabelText = "正規化相関値"
+            drawContext.canvas.nativeCanvas.save()
+            drawContext.canvas.nativeCanvas.rotate(-90f)
+            drawContext.canvas.nativeCanvas.drawText(yLabelText, -(graphContentTop + graphContentHeight / 2f), leftPadding * 0.3f, yAxisLabelPaint)
+            drawContext.canvas.nativeCanvas.restore()
+            drawLine(color = Color.Black, start = Offset(graphContentLeft, graphContentTop), end = Offset(graphContentLeft, graphContentBottom), strokeWidth = 3.0f)
+            drawLine(color = Color.Black, start = Offset(graphContentLeft, graphMiddleY), end = Offset(graphContentRight, graphMiddleY), strokeWidth = 3.0f)
+            val yTickValues = listOf(-1.0f, -0.75f, -0.5f, -0.25f, 0.0f, 0.25f, 0.5f, 0.75f, 1.0f)
+            yTickValues.forEach { tickValue ->
+                val tickY = graphMiddleY - tickValue * yScaleFactor
+                if (tickY >= graphContentTop && tickY <= graphContentBottom) {
+                    drawLine(color = Color.Black, start = Offset(graphContentLeft - 5.dp.toPx(), tickY), end = Offset(graphContentLeft, tickY), strokeWidth = 3.0f)
+                    if (abs(tickValue) > 1e-3) {
+                        drawContext.canvas.nativeCanvas.drawText(String.format("%.2f", tickValue), graphContentLeft - 10.dp.toPx(), tickY + yAxisValueLabelPaint.textSize / 3f, yAxisValueLabelPaint)
+                    }
+                }
+            }
+            if (graphContentWidth > 0f) {
+                val tickIntervalMsGraph = 10f
+                var currentTickMsGraph = 0f
+                val xTickLabelYPosition = graphContentBottom + bottomPadding / 2.0f
+                while (currentTickMsGraph <= maxLagMsGraph) {
+                    val tickX = graphContentLeft + (currentTickMsGraph / maxLagMsGraph) * graphContentWidth
+                    if (tickX >= graphContentLeft && tickX <= graphContentRight) {
+                        drawLine(color = Color.Black, start = Offset(tickX, graphContentBottom), end = Offset(tickX, graphContentBottom + 5.dp.toPx()), strokeWidth = 3.0f)
+                        drawContext.canvas.nativeCanvas.drawText("${currentTickMsGraph.toInt()}", tickX, xTickLabelYPosition, tickLabelPaint)
+                    }
+                    currentTickMsGraph += tickIntervalMsGraph
+                    if (tickIntervalMsGraph <= 0f) break
+                }
+            }
+            if (result.isNotEmpty() && graphContentWidth > 0f && graphContentHeight > 0f) {
+                val path = Path()
+                val resultSize = result.size
+                val samplesPerMs = sampleRate.toFloat() / 1000f
+                val samplesInGraph = (maxLagMsGraph * samplesPerMs).toInt().coerceAtMost(resultSize)
+                val dx = if (samplesInGraph > 1) graphContentWidth / (samplesInGraph - 1).toFloat() else graphContentWidth
+                if (samplesInGraph > 0) {
+                    path.moveTo(graphContentLeft, (graphMiddleY - result[0] * yScaleFactor).coerceIn(graphContentTop, graphContentBottom))
+                    for (i in 1 until samplesInGraph) {
+                        val x = graphContentLeft + i * dx
+                        val y = (graphMiddleY - result[i] * yScaleFactor).coerceIn(graphContentTop, graphContentBottom)
+                        path.lineTo(x.coerceIn(graphContentLeft, graphContentRight), y)
+                    }
+                    drawPath(path = path, color = primaryColor, style = Stroke(width = 3.5f))//Color(0xFF00008B)濃い青
+                    peakInfo?.let { (index, value) ->
+                        if (index < samplesInGraph) {
+                            val peakX = graphContentLeft + index * dx
+                            val peakY = (graphMiddleY - value * yScaleFactor).coerceIn(graphContentTop, graphContentBottom)
+                            if (peakX >= graphContentLeft && peakX <= graphContentRight) {
+                                drawCircle(color = orangeColor, radius = 8f, center = Offset(peakX, peakY))
+                                val peakValueText = String.format("%.3f", value)
+                                drawContext.canvas.nativeCanvas.drawText(peakValueText, peakX + 10.dp.toPx(), peakY - 5.dp.toPx(), peakValuePaint)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
+    // --- 権限関連 (変更なし) ---
+    private fun checkAndRequestPermission() {
+        when {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED -> {
+                if (!hasPermission) { Log.d(TAG, "Permission already granted."); hasPermission = true; initAudioRecord() }
+                else if (!isInitialized && audioRecord == null) { initAudioRecord() }
+            }
+            shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO) -> {
+                Log.i(TAG, "Showing permission rationale."); hasPermission = false; statusText = "マイク権限が必要です"
+                Toast.makeText(this, "録音にはマイク権限の許可が必要です", Toast.LENGTH_LONG).show(); requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+            else -> { Log.d(TAG, "Requesting permission."); hasPermission = false; requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO) }
+        }
+    }
+    // --- AudioRecord初期化 (変更なし) ---
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
+    private fun initAudioRecord() {
+        if (audioRecord != null || !hasPermission) return
+        minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+        if (minBufferSize <= 0) { Log.e(TAG, "Invalid AudioRecord parameters."); statusText = "AudioRecordパラメータエラー"; isInitialized = false; audioRecord = null; return }
+        bufferSizeInBytes = minBufferSize * 2
+        Log.d(TAG, "minBufferSize: $minBufferSize, used bufferSize: $bufferSizeInBytes")
+        try {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { Log.e(TAG, "FATAL: Permission check failed inside initAudioRecord!"); hasPermission = false; statusText = "マイク権限エラー（内部確認）"; isInitialized = false; return }
+            audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, channelConfig, audioFormat, bufferSizeInBytes)
+            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) { Log.e(TAG, "AudioRecord failed to initialize."); statusText = "AudioRecord初期化失敗"; isInitialized = false; audioRecord?.release(); audioRecord = null }
+            else { Log.d(TAG, "AudioRecord initialized successfully."); statusText = if (!isRecording) "待機中" else statusText; isInitialized = true }
+        } catch (e: SecurityException) { Log.e(TAG, "SecurityException initializing AudioRecord", e); statusText = "初期化エラー: 権限がありません"; isInitialized = false; hasPermission = false; audioRecord = null }
+        catch (e: Exception) { Log.e(TAG, "Exception initializing AudioRecord", e); statusText = "初期化エラー: ${e.message}"; isInitialized = false; audioRecord = null }
+    }
+
+    // --- 録音開始と定期計算開始 (変更なし) ---
+    private fun startRecordingAndPeriodicCalculation(scope: CoroutineScope) {
+        if (!hasPermission) { Log.w(TAG, "Start recording denied. Missing permission."); statusText = "マイク権限がありません"; checkAndRequestPermission(); return }
+        if (!isInitialized || audioRecord == null) { Log.w(TAG, "Start recording denied. AudioRecord not initialized."); statusText = "AudioRecord未初期化"; initAudioRecord(); return }
+        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) { Log.e(TAG, "Start recording failed. AudioRecord not in initialized state."); statusText = "AudioRecord状態異常"; audioRecord?.release(); audioRecord = null; isInitialized = false; checkAndRequestPermission(); return }
+        if (isRecording) { Log.w(TAG, "Already recording."); return }
+
+        recordedAudioBuffer.clear()
+        correlationResult = emptyList()
+        currentDbLevel = MIN_DB_LEVEL
+        levelFeedbackText = ""
+
+        try {
+            audioRecord?.startRecording()
+            isRecording = true
+            statusText = "録音中..."
+            Log.d(TAG, "Recording started.")
+            recordingThread = thread(start = true) { processAudioStream() }
+            calculationCoroutineJob?.cancel()
+            calculationCoroutineJob = scope.launch(Dispatchers.IO) {
+                Log.d(TAG, "Periodic calculation coroutine started.")
+                while (isActive && isRecording) {
+                    delay(calculationIntervalMs)
+                    if (!isActive || !isRecording) break
+                    launch(Dispatchers.Default) { performCorrelationCalculation() }
+                }
+                Log.d(TAG, "Periodic calculation coroutine finished.")
+            }
+        } catch (e: IllegalStateException) { Log.e(TAG, "Failed to start recording", e); statusText = "録音開始エラー"; isRecording = false }
+    }
+    // --- 音声データ処理 (変更なし) ---
+    private fun processAudioStream() {
+        Log.d(TAG, "Audio processing thread started.")
+        val audioDataShort = ShortArray(bufferSizeInBytes / 2)
+        Log.d(TAG, "Entering processAudioStream loop. isRecording=$isRecording")
+        while (isRecording) {
+            val shortsRead = audioRecord?.read(audioDataShort, 0, audioDataShort.size) ?: -1
+            if (shortsRead < 0) { Log.e(TAG, "Read() error: $shortsRead"); break }
+            else if (shortsRead > 0) {
+                val copy = audioDataShort.copyOfRange(0, shortsRead)
+                synchronized(recordedAudioBuffer) {
+                    recordedAudioBuffer.addAll(copy.toList())
+                    val maxBufferSamples = sampleRate * (calculationDataDurationSec + 2)
+                    if (recordedAudioBuffer.size > maxBufferSamples) {
+                        val removeCount = recordedAudioBuffer.size - maxBufferSamples
+                        for(i in 0 until removeCount) recordedAudioBuffer.removeAt(0)
+                    }
+                }
+                var sumOfSquares = 0.0
+                for (i in 0 until shortsRead) {
+                    val normalizedSample = copy[i].toDouble() / Short.MAX_VALUE.toDouble()
+                    sumOfSquares += normalizedSample.pow(2)
+                }
+                val meanSquare = if (shortsRead > 0) sumOfSquares / shortsRead else 0.0
+                val rms = sqrt(meanSquare)
+                val dbfs = if (rms > 1e-10) { (20.0 * log10(rms)).toFloat() } else { MIN_DB_LEVEL }
+                val feedback = when {
+                    dbfs < LEVEL_THRESHOLD_LOW -> "音が小さい可能性があります"
+                    dbfs >= LEVEL_THRESHOLD_IDEAL_LOW && dbfs < LEVEL_THRESHOLD_IDEAL_HIGH -> "理想的な音量レベル"
+                    dbfs >= LEVEL_THRESHOLD_HIGH -> "音量が大きいため歪みが発生する可能性があります"
+                    else -> ""
+                }
+                runOnUiThread { currentDbLevel = dbfs; levelFeedbackText = feedback }
+            }
+        }
+        Log.d(TAG, "Exiting processAudioStream loop.")
+        Log.d(TAG, "Audio processing thread finished.")
+    }
+
+    // ★★★ 定期的に呼ばれる相関計算処理 (正規化方法変更) ★★★
+    private suspend fun performCorrelationCalculation() {
+        Log.d(TAG, "Performing correlation calculation...")
+        val samplesToTake = sampleRate * calculationDataDurationSec
+        val recordedData: ShortArray
+        synchronized(recordedAudioBuffer) {
+            val startIndex = (recordedAudioBuffer.size - samplesToTake).coerceAtLeast(0)
+            if (recordedAudioBuffer.size - startIndex < M_SEQUENCE_FLOAT_ARRAY.size) {
+                Log.d(TAG, "Buffer too short for correlation (${recordedAudioBuffer.size - startIndex}), skipping calculation.")
+                return
+            }
+            recordedData = recordedAudioBuffer.subList(startIndex, recordedAudioBuffer.size).toShortArray()
+        }
+        Log.d(TAG, "Using last ${recordedData.size} samples for calculation.")
+
+        val referenceSignal = M_SEQUENCE_FLOAT_ARRAY
+
+        // --- 相互相関計算 ---
+        val rawCorrelation = calculateCrossCorrelationTimeDomainFull(recordedData, referenceSignal)
+        Log.d(TAG, "Raw correlation calculated. Size: ${rawCorrelation.size}")
+
+        // --- ★★★ 新しい正規化関数を呼び出す ★★★ ---
+        val normalizedCorrelation = normalizeCrossCorrelation(rawCorrelation, recordedData, referenceSignal) // ★変更箇所★
+        // val normalizedCorrelation = normalizeByCorrelationPower(rawCorrelation, recordedData, referenceSignal.size) // 以前の呼び出しはコメントアウト
+        // val normalizedCorrelation = normalizeCorrelation(rawCorrelation) // 以前のL2ノルム正規化はコメントアウト
+        Log.d(TAG, "Correlation normalized by new method.")
+
+        val samplesFor50ms = (sampleRate.toFloat() * 0.050f).toInt()
+        val resultSize = min(samplesFor50ms, normalizedCorrelation.size)
+        val correlationForGraph = if (resultSize > 0) { normalizedCorrelation.copyOfRange(0, resultSize).toList() } else { emptyList() }
+        withContext(Dispatchers.Main) { correlationResult = correlationForGraph; Log.d(TAG, "Correlation graph data updated (${correlationForGraph.size} points).") }
+    }
+
+    // --- 録音停止と定期計算停止 (変更なし) ---
+    private fun stopRecordingAndCalculation() {
+        if (!isRecording) return
+        stopRecordingInternal(calculate = false)
+        runOnUiThread { currentDbLevel = MIN_DB_LEVEL; levelFeedbackText = "" }
+    }
+    // --- 内部的な停止処理 (変更なし) ---
+    private fun stopRecordingInternal(calculate: Boolean = false, scope: CoroutineScope? = null) {
+        if (!isRecording && audioRecord?.recordingState != AudioRecord.RECORDSTATE_RECORDING) { return }
+        Log.d(TAG, "Stopping recording internal... Calculate = $calculate")
+        isRecording = false
+        calculationCoroutineJob?.cancel()
+        calculationCoroutineJob = null
+        Log.d(TAG, "Periodic calculation coroutine cancelled.")
+        try { recordingThread?.join(500) }
+        catch (e: InterruptedException) { Thread.currentThread().interrupt(); Log.e(TAG, "Interrupted while waiting for recording thread", e) }
+        recordingThread = null
+        if (audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) { try { audioRecord?.stop(); Log.d(TAG, "AudioRecord stopped successfully.") } catch (e: IllegalStateException) { Log.e(TAG, "Failed to stop AudioRecord", e) } }
+        else { Log.w(TAG, "AudioRecord was not recording when stop was requested.") }
+        Log.d(TAG, "Stopped recording. Total samples in buffer: ${recordedAudioBuffer.size}")
+        runOnUiThread {
+            if (statusText.contains("エラー")) { /* No change */ }
+            else if (isInitialized) { statusText = "停止" }
+            correlationResult = emptyList()
+        }
+        Log.d(TAG, "Recording fully stopped internal.")
+    }
+    // --- 時間領域相互相関関数 (変更なし) ---
+    private fun calculateCrossCorrelationTimeDomainFull(longSignal: ShortArray, shortSignal: FloatArray): FloatArray {
+        if (shortSignal.isEmpty() || longSignal.size < shortSignal.size) { Log.e(TAG, "calculateCrossCorrelationTimeDomainFull: 入力信号の長さが不正です。longSignal.size=${longSignal.size}, shortSignal.size=${shortSignal.size}"); return FloatArray(0) }
+        val n = longSignal.size; val m = shortSignal.size; val resultLength = n - m + 1; val correlationResult = FloatArray(resultLength)
+        for (j in 0 until resultLength) { var sumOfProducts = 0.0f; for (k in 0 until m) { sumOfProducts += longSignal[j + k].toFloat() * shortSignal[k] }; correlationResult[j] = sumOfProducts }
+        return correlationResult
+    }
+
+    // --- ★★★ 新しい正規化関数 (相関電力ベース) (2025/05/07/PM7:00追加) ★★★ ---
+    /**
+     * 相互相関結果を、「送信系列と受信系列の絶対値の畳み込みのルート」に近い考え方で正規化
+     * 具体的には、各ラグにおける受信信号ウィンドウの「絶対値和の平方根」で割る
+     * (M系列の絶対値は常に1であるため、送信系列の絶対値の要素は簡略化)
+     */
+    private fun normalizeByCorrelationPower(
+        correlationData: FloatArray,
+        longSignal: ShortArray,      // 受信信号全体
+        shortSignalLength: Int     // 参照信号(M系列)の長さ
+    ): FloatArray {
+        Log.d(TAG, "normalizeByCorrelationPower: 開始 data.size=${correlationData.size}")
+        if (correlationData.isEmpty() || shortSignalLength <= 0 || longSignal.size < shortSignalLength) {
+            Log.w(TAG, "normalizeByCorrelationPower: 入力データが不正です。")
+            return FloatArray(0)
+        }
+
+        val m = shortSignalLength
+        val resultLength = correlationData.size // これは longSignal.size - m + 1
+
+        val normalizedResult = FloatArray(resultLength)
+
+        for (j in 0 until resultLength) { // j はラグ (0 から resultLength - 1)
+            // 受信信号の対応するウィンドウの絶対値和を計算
+            var sumAbsLongSignalWindow = 0.0
+            for (k in 0 until m) { // ウィンドウ内の各サンプル
+                sumAbsLongSignalWindow += abs(longSignal[j + k].toDouble())
+            }
+
+            // 正規化係数 = sqrt(受信信号ウィンドウの絶対値和)
+            // (M系列の絶対値和は m だが、ここでは単純化のため受信側のみ考慮)
+            val normFactor = sqrt(sumAbsLongSignalWindow)
+
+            if (abs(normFactor) < 1e-9) { // ゼロ除算回避
+                normalizedResult[j] = 0.0f
+            } else {
+                normalizedResult[j] = (correlationData[j].toDouble() / normFactor).toFloat()
+            }
+        }
+        Log.d(TAG, "normalizeByCorrelationPower: 完了")
+        return normalizedResult
+    }
+
+    // --- 以前のL2ノルム正規化関数 (コメントアウト) ---
+    /*
+    private fun normalizeCorrelation(correlationData: FloatArray): FloatArray {
+        Log.d(TAG, "normalizeCorrelation: 開始 data.size=${correlationData.size}")
+        if (correlationData.isEmpty()) { Log.w(TAG, "normalizeCorrelation: データが空です"); return FloatArray(0) }
+        var sumOfSquares: Double = 0.0; for (value in correlationData) { sumOfSquares += value.toDouble() * value.toDouble() }; Log.d(TAG, "normalizeCorrelation: Sum of Squares = $sumOfSquares")
+        val normFactor = sqrt(sumOfSquares); Log.d(TAG, "normalizeCorrelation: Normalization Factor (sqrt of sum of squares) = $normFactor")
+        return if (abs(normFactor) < 1e-9) { Log.w(TAG, "normalizeCorrelation: 正規化係数がほぼゼロのため、ゼロ配列を返します"); FloatArray(correlationData.size) }
+        else { val normalizedData = FloatArray(correlationData.size) { i -> (correlationData[i].toDouble() / normFactor).toFloat() }; Log.d(TAG, "normalizeCorrelation: 完了"); normalizedData }
+    }
+    */
+
+    // ★★★ sp を px に変換する拡張関数 ★★★
+    fun Float.spToPx(density: Float, fontScale: Float): Float = this * fontScale * density
+    fun Int.spToPx(density: Float, fontScale: Float): Float = this.toFloat().spToPx(density, fontScale)
+    fun androidx.compose.ui.unit.TextUnit.toPx(density: Float, fontScale: Float): Float {
+        return if (this.isSp) this.value.spToPx(density, fontScale) else this.value
+    }
+    // ★★★ 新しい正規化関数 (標準的な正規化相互相関) ★★★
+    private fun normalizeCrossCorrelation(
+        rawCorrelation: FloatArray,    // 生の相関データ C[j] = sum(L[j+k] * S[k])
+        longSignal: ShortArray,        // 受信信号 L (recordedData)
+        shortSignal: FloatArray        // 参照信号 S (M系列, referenceSignal)
+    ): FloatArray {
+        Log.d(TAG, "normalizeCrossCorrelation: 開始 rawCorrelation.size=${rawCorrelation.size}, longSignal.size=${longSignal.size}, shortSignal.size=${shortSignal.size}")
+        if (rawCorrelation.isEmpty() || shortSignal.isEmpty() || longSignal.size < shortSignal.size) {
+            Log.w(TAG, "normalizeCrossCorrelation: 入力データが不正です。rawCorrelation empty: ${rawCorrelation.isEmpty()}, shortSignal empty: ${shortSignal.isEmpty()}, longSignal too short: ${longSignal.size < shortSignal.size}")
+            return FloatArray(0) // 空の配列を返すか、エラー処理
+        }
+
+        val m = shortSignal.size // 参照信号(M系列)の長さ
+        val resultLength = rawCorrelation.size // 生の相関結果の長さ (longSignal.size - m + 1)
+
+        if (resultLength <= 0) {
+            Log.w(TAG, "normalizeCrossCorrelation: resultLength is non-positive: $resultLength")
+            return FloatArray(0)
+        }
+
+        val normalizedResult = FloatArray(resultLength)
+
+        // 参照信号(shortSignal, M系列)のエネルギーの平方根を計算
+        // M系列の要素は-1.0fか1.0fなので、二乗すると常に1.0fになる
+        // よって、sum(shortSignal[k]^2) は m (shortSignal.size) となる
+        var sumSqShortSignal = 0.0
+        for (sampleValue in shortSignal) {
+            sumSqShortSignal += sampleValue.toDouble() * sampleValue.toDouble()
+        }
+        // sumSqShortSignal は m (shortSignal.size) に非常に近いはず。念のため計算する。
+        val energyShortSignalSqrt = sqrt(sumSqShortSignal)
+
+        if (abs(energyShortSignalSqrt) < 1e-9) { // M系列の長さが0、または全要素が0の場合 (通常あり得ない)
+            Log.w(TAG, "normalizeCrossCorrelation: 参照信号のエネルギーがほぼゼロです (sqrt: $energyShortSignalSqrt).")
+            // この場合、分母が0になるため、結果は0またはNaN。安全のため0の配列を返す。
+            return FloatArray(resultLength) { 0.0f }
+        }
+
+        for (j in 0 until resultLength) { // j はラグ (0 から resultLength - 1)
+            // 受信信号の対応するウィンドウのエネルギーの平方根を計算
+            // ウィンドウは longSignal[j] から longSignal[j + m - 1]
+            var sumSqLongSignalWindow = 0.0
+            for (k in 0 until m) {
+                // longSignal のインデックスが範囲内であることを確認 (j+k < longSignal.size)
+                // rawCorrelationの計算で保証されているはずだが念のため
+                if (j + k >= longSignal.size) {
+                    Log.e(TAG, "normalizeCrossCorrelation: Index out of bounds for longSignal. j=$j, k=$k, m=$m, longSignal.size=${longSignal.size}")
+                    // このような状況は設計上発生しないはず。発生した場合、エラーとして扱う。
+                    normalizedResult[j] = 0.0f // 安全な値
+                    continue // or break and return error
+                }
+                val sample = longSignal[j + k].toDouble()
+                sumSqLongSignalWindow += sample * sample
+            }
+            val energyLongSignalWindowSqrt = sqrt(sumSqLongSignalWindow)
+
+            // 正規化係数 = sqrt(sum(S[k]^2)) * sqrt(sum(L[j+k]^2))
+            val normFactor = energyShortSignalSqrt * energyLongSignalWindowSqrt
+
+            if (abs(normFactor) < 1e-9) { // ゼロ除算回避 (例: 受信信号ウィンドウ内の信号が全てゼロ)
+                normalizedResult[j] = 0.0f
+            } else {
+                normalizedResult[j] = (rawCorrelation[j].toDouble() / normFactor).toFloat()
+            }
+        }
+        Log.d(TAG, "normalizeCrossCorrelation: 完了. First few normalized values: ${normalizedResult.take(5).joinToString { String.format("%.3f", it) }}")
+        return normalizedResult
+    }
+} // End of MainActivity
