@@ -1,0 +1,369 @@
+import sys
+import numpy as np
+import sounddevice as sd
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QFrame, QCheckBox
+)
+from PyQt6.QtCore import QTimer, Qt
+import pyqtgraph as pg
+import queue
+from typing import List
+
+# -----------------------------------------------------------------------------
+# ★変更点: 新しいプロットウィンドウ用のクラスを追加
+# -----------------------------------------------------------------------------
+class PlotWindow(QWidget):
+    """振幅・位相特性表示用の汎用プロットウィンドウ"""
+    def __init__(self, title, x_label, y_label, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setGeometry(1100, 100, 800, 600) # メインウィンドウの隣に表示
+
+        layout = QVBoxLayout(self)
+        self.plot_widget = pg.PlotWidget()
+        self.plot_widget.setBackground('w')
+        
+        label_style = {'color': 'black', 'font-size': '16pt', 'font-family': 'Times New Roman'}
+        self.plot_widget.setLabel('left', y_label, **label_style)
+        self.plot_widget.setLabel('bottom', x_label, **label_style)
+
+        axis_pen = pg.mkPen(color='k')
+        tick_font = pg.QtGui.QFont('Times New Roman', 12)
+        self.plot_widget.getAxis('left').setTextPen(axis_pen)
+        self.plot_widget.getAxis('left').setStyle(tickFont=tick_font)
+        self.plot_widget.getAxis('bottom').setTextPen(axis_pen)
+        self.plot_widget.getAxis('bottom').setStyle(tickFont=tick_font)
+
+        self.plot_widget.showGrid(x=True, y=True)
+        pen = pg.mkPen(color=(0, 120, 215), width=2)
+        self.curve = self.plot_widget.plot(pen=pen)
+        layout.addWidget(self.plot_widget)
+
+    def update_plot(self, x_data, y_data):
+        self.curve.setData(x_data, y_data)
+
+# -----------------------------------------------------------------------------
+# 定数 (Constants)
+# -----------------------------------------------------------------------------
+M_SEQUENCE_RAW_DATA: List[float] = [
+    -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0,
+    -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0,
+    -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0,
+    1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0,
+    1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0,
+    -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0,
+    -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0,
+    1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0,
+    1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0,
+    -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0
+]
+MODIFIED_M_SEQUENCE_RAW_DATA = [0.969223 if x == 1.0 else -1.029800 for x in M_SEQUENCE_RAW_DATA]
+M_SEQUENCE = np.array(MODIFIED_M_SEQUENCE_RAW_DATA, dtype=np.float32) * -1.0
+
+SAMPLE_RATE = 96000
+CHANNELS = 1
+DEVICE = None
+BLOCK_DURATION_MS = 50
+BLOCKSIZE = int(SAMPLE_RATE * BLOCK_DURATION_MS / 1000)
+ANALYSIS_INTERVAL_MS = 2000
+ANALYSIS_DURATION_S = 2
+BUFFER_DURATION_S = ANALYSIS_DURATION_S + 2
+CORRELATION_ADJUSTMENT_FACTOR = 0.9995
+GRAPH_VIEWPORT_WIDTH_MS = 10.9
+Y_AXIS_RANGE = (-1.0, 1.0)
+Y_ZOOM_LEVELS = [1.0, 2.0, 3.0]
+MIN_DB_LEVEL = -120.0
+LEVEL_THRESHOLD_LOW = -40.0
+LEVEL_THRESHOLD_IDEAL_LOW = -20.0
+LEVEL_THRESHOLD_IDEAL_HIGH = -6.0
+LEVEL_THRESHOLD_HIGH = -3.0
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("準リアルタイム CIR (Quasi-Real-Time CIR)")
+        self.setGeometry(100, 100, 1000, 700)
+
+        self.is_recording = False
+        self.audio_stream = None
+        self.audio_queue = queue.Queue()
+        self.audio_buffer = np.array([], dtype=np.float32)
+        self.current_y_zoom_index = 0
+        self.equalizer_coeffs = None
+        self.amp_window = None
+        self.phase_window = None
+        
+        self._load_equalizer_coeffs()
+        self._init_ui()
+
+        self.analysis_timer = QTimer(self)
+        self.analysis_timer.setInterval(ANALYSIS_INTERVAL_MS)
+        self.analysis_timer.timeout.connect(self._perform_analysis)
+
+    def _load_equalizer_coeffs(self):
+        try:
+            data = np.loadtxt('postcorder.txt', dtype=np.float32)
+            self.equalizer_coeffs = data[:, 0] + 1j * data[:, 1]
+            print(f"通知: postcorder.txtから{len(self.equalizer_coeffs)}個の等化係数を読み込みました。")
+        except FileNotFoundError:
+            print("警告: postcorder.txt が見つかりません。ポスト等化は無効になります。")
+        except Exception as e:
+            print(f"エラー: postcorder.txt の読み込みに失敗しました: {e}")
+
+    def _init_ui(self):
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+
+        control_layout = QHBoxLayout()
+        self.start_button = QPushButton("録音開始")
+        self.start_button.clicked.connect(self.start_recording)
+        self.stop_button = QPushButton("停止")
+        self.stop_button.clicked.connect(self.stop_recording)
+        self.stop_button.setEnabled(False)
+        self.zoom_button = QPushButton("拡大")
+        self.zoom_button.clicked.connect(self._cycle_y_zoom)
+        self.reset_button = QPushButton("リセット")
+        self.reset_button.clicked.connect(self._reset_y_zoom)
+        self.equalizer_checkbox = QCheckBox("ポスト等化 ON/OFF")
+        self.equalizer_checkbox.setChecked(True)
+        if self.equalizer_coeffs is None:
+            self.equalizer_checkbox.setEnabled(False)
+        control_layout.addWidget(self.start_button)
+        control_layout.addWidget(self.stop_button)
+        control_layout.addWidget(self.zoom_button)
+        control_layout.addWidget(self.reset_button)
+        control_layout.addWidget(self.equalizer_checkbox)
+        
+        status_layout = QHBoxLayout()
+        self.status_label = QLabel("ステータス: 待機中")
+        self.db_level_label = QLabel("入力レベル: --- dBFS")
+        self.level_feedback_label = QLabel("")
+        status_layout.addWidget(self.status_label, 1)
+        status_layout.addWidget(self.db_level_label, 1)
+        status_layout.addWidget(self.level_feedback_label, 1)
+        
+        self.plot_widget = pg.PlotWidget()
+        self.plot_widget.setBackground('w')
+        label_style = {'color': 'black', 'font-size': '16pt', 'font-family': 'Times New Roman'}
+        self.plot_widget.setLabel('left', '正規化相関値', **label_style)
+        self.plot_widget.setLabel('bottom', '時間差 (ms)', **label_style)
+        axis_pen = pg.mkPen(color='k')
+        tick_font = pg.QtGui.QFont('Times New Roman', 12)
+        left_axis = self.plot_widget.getAxis('left')
+        left_axis.setTextPen(axis_pen)
+        left_axis.setStyle(tickFont=tick_font)
+        bottom_axis = self.plot_widget.getAxis('bottom')
+        bottom_axis.setTextPen(axis_pen)
+        bottom_axis.setStyle(tickFont=tick_font)
+        
+        # ★変更点: X軸の表示範囲と目盛りを、ピーク中心表示に合わせて変更
+        vb = self.plot_widget.getViewBox()
+        half_width_ms = GRAPH_VIEWPORT_WIDTH_MS / 2.0
+        vb.setXRange(-half_width_ms, half_width_ms, padding=0)
+        vb.setYRange(Y_AXIS_RANGE[0], Y_AXIS_RANGE[1], padding=0)
+        vb.setLimits(xMin=-half_width_ms, xMax=half_width_ms)
+        x_ticks = [(i, str(i)) for i in range(-4, 5, 2)] 
+        bottom_axis.setTicks([x_ticks])
+
+        self.plot_widget.showGrid(x=True, y=True)
+        pen = pg.mkPen(color=(0, 120, 215), width=2)
+        self.correlation_curve = self.plot_widget.plot(pen=pen)
+        self.peak_scatter = self.plot_widget.plot(pen=None, symbol='o', symbolBrush='r', symbolSize=10)
+        self.peak_text = pg.TextItem(anchor=(0, 1), color=(255, 0, 0))
+        font = pg.QtGui.QFont('Times New Roman', 12)
+        self.peak_text.setFont(font)
+        self.plot_widget.addItem(self.peak_text)
+        main_layout.addLayout(control_layout)
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        main_layout.addWidget(line)
+        main_layout.addLayout(status_layout)
+        main_layout.addWidget(self.plot_widget)
+        if self.equalizer_coeffs is None:
+            self.status_label.setText("ステータス: 待機中 (フィルタファイル無)")
+            self.status_label.setStyleSheet("color: red;")
+
+    def _audio_callback(self, indata, frames, time, status):
+        if status: print(status, file=sys.stderr)
+        self.audio_queue.put(indata.copy())
+        
+    def start_recording(self):
+        if self.is_recording: return
+        with self.audio_queue.mutex: self.audio_queue.queue.clear()
+        self.audio_buffer = np.array([], dtype=np.float32)
+        
+        if self.amp_window is None:
+            self.amp_window = PlotWindow(title="振幅特性", x_label="frequency [Hz]", y_label="Power [dB]")
+            self.amp_window.plot_widget.setYRange(-80, 20)
+            self.amp_window.plot_widget.setXRange(0, 48000)
+            freq_ticks = [(i*1000, f"{i}k") for i in range(0, 41, 10)]
+            self.amp_window.plot_widget.getAxis('bottom').setTicks([freq_ticks])
+        self.amp_window.show()
+
+        if self.phase_window is None:
+            self.phase_window = PlotWindow(title="位相特性", x_label="frequency [Hz]", y_label="Phase")
+            self.phase_window.plot_widget.setXRange(0, 48000)
+            # ★変更点: 位相グラフのY軸範囲を固定
+            self.phase_window.plot_widget.setYRange(-0.6, 0.6) # ±0.5に少し余白
+            freq_ticks = [(i*1000, f"{i}k") for i in range(0, 41, 10)]
+            self.phase_window.plot_widget.getAxis('bottom').setTicks([freq_ticks])
+        self.phase_window.show()
+
+        try:
+            self.audio_stream = sd.InputStream(samplerate=SAMPLE_RATE, blocksize=BLOCKSIZE, device=DEVICE, channels=CHANNELS, dtype='float32', callback=self._audio_callback)
+            self.audio_stream.start()
+            self.analysis_timer.start()
+            self.is_recording = True
+            self.status_label.setText("ステータス: 録音中...")
+            self.status_label.setStyleSheet("color: black;")
+            self.start_button.setEnabled(False)
+            self.stop_button.setEnabled(True)
+        except Exception as e:
+            self.status_label.setText(f"エラー: {e}")
+            self.status_label.setStyleSheet("color: red;")
+
+    def stop_recording(self):
+        if not self.is_recording: return
+        self.analysis_timer.stop()
+        if self.audio_stream:
+            self.audio_stream.stop()
+            self.audio_stream.close()
+            self.audio_stream = None
+        
+        if self.amp_window: self.amp_window.close()
+        if self.phase_window: self.phase_window.close()
+            
+        self.is_recording = False
+        if self.equalizer_coeffs is None:
+            self.status_label.setText("ステータス: 停止 (フィルタファイル無)")
+            self.status_label.setStyleSheet("color: red;")
+        else:
+            self.status_label.setText("ステータス: 停止")
+            self.status_label.setStyleSheet("color: black;")
+        self.db_level_label.setText("入力レベル: --- dBFS")
+        self.level_feedback_label.setText("")
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+
+    def _perform_analysis(self):
+        new_data = [];
+        while not self.audio_queue.empty(): new_data.append(self.audio_queue.get())
+        if not new_data: return
+        flattened_new_data = [block.flatten() for block in new_data]
+        self.audio_buffer = np.concatenate([self.audio_buffer, *flattened_new_data])
+        max_buffer_samples = int(SAMPLE_RATE * BUFFER_DURATION_S)
+        if len(self.audio_buffer) > max_buffer_samples: self.audio_buffer = self.audio_buffer[-max_buffer_samples:]
+        level_samples = self.audio_buffer[-int(SAMPLE_RATE * 0.1):]
+        if level_samples.size > 0:
+            rms = np.sqrt(np.mean(level_samples**2))
+            dbfs = 20 * np.log10(rms) if rms > 1e-10 else MIN_DB_LEVEL
+            self.db_level_label.setText(f"入力レベル: {dbfs:.1f} dBFS")
+            feedback_text, color = "", "black"
+            if dbfs < LEVEL_THRESHOLD_LOW: feedback_text, color = "音が小さい", "blue"
+            elif LEVEL_THRESHOLD_IDEAL_LOW <= dbfs < LEVEL_THRESHOLD_IDEAL_HIGH: feedback_text, color = "理想的な音量", "green"
+            elif dbfs >= LEVEL_THRESHOLD_HIGH: feedback_text, color = "音が大きい", "red"
+            self.level_feedback_label.setText(feedback_text)
+            self.level_feedback_label.setStyleSheet(f"color: {color};")
+        samples_for_analysis = int(SAMPLE_RATE * ANALYSIS_DURATION_S)
+        if len(self.audio_buffer) < samples_for_analysis: return
+        long_signal = self.audio_buffer[-samples_for_analysis:]
+        short_signal = M_SEQUENCE
+        correlation = np.correlate(long_signal, short_signal, mode='valid')
+        correlation *= CORRELATION_ADJUSTMENT_FACTOR
+        short_energy = np.sum(short_signal**2)
+        s = np.cumsum(long_signal**2)
+        long_energy_window = s[len(short_signal)-1:] - np.concatenate(([0], s[:-len(short_signal)]))
+        norm_factor = np.sqrt(short_energy * long_energy_window)
+        norm_factor[norm_factor < 1e-9] = 1e-9
+        normalized_correlation = correlation / norm_factor
+        
+        peak_index_corr = np.argmax(np.abs(normalized_correlation))
+        window_size = 1024
+        start_index = max(0, peak_index_corr - window_size // 2)
+        end_index = start_index + window_size
+        if end_index > len(normalized_correlation):
+            end_index = len(normalized_correlation)
+            start_index = end_index - window_size
+        cir_window = normalized_correlation[start_index:end_index]
+
+        final_cir = cir_window
+        if self.equalizer_coeffs is not None and self.equalizer_checkbox.isChecked():
+            if len(cir_window) == len(self.equalizer_coeffs):
+                freq_domain_cir = np.fft.fft(cir_window)
+                equalized_freq_domain = freq_domain_cir * self.equalizer_coeffs
+                final_cir = np.fft.ifft(equalized_freq_domain).real
+
+        self._update_graph(final_cir)
+
+        if self.amp_window and self.phase_window:
+            peak_index_window = np.argmax(np.abs(final_cir))
+            shifted_cir = np.roll(final_cir, -peak_index_window)
+
+            N = len(shifted_cir)
+            if N > 0:
+                cir_fft = np.fft.fft(shifted_cir)
+                freqs = np.fft.fftfreq(N, d=1.0/SAMPLE_RATE)
+                
+                positive_mask = freqs >= 0
+                freqs = freqs[positive_mask]
+                cir_fft = cir_fft[positive_mask]
+                
+                power_spectrum = np.abs(cir_fft)**2
+                avg_power = np.mean(power_spectrum)
+                power_db = 10 * np.log10(power_spectrum / avg_power) if avg_power > 1e-12 else np.full_like(power_spectrum, -200)
+                
+                # ★変更点: アンラップ処理を削除
+                phase_wrapped = np.angle(cir_fft)
+                phase = phase_wrapped / (2 * np.pi)
+
+                self.amp_window.update_plot(freqs, power_db)
+                self.phase_window.update_plot(freqs, phase)
+
+    def _update_graph(self, correlation_data: np.ndarray):
+        # ★変更点: CIRグラフの表示ロジックを更新
+        display_data = correlation_data
+        N = len(display_data)
+        if N == 0: return
+
+        # ピークが中心(0ms)に来るように時間軸を生成
+        time_axis = (np.arange(N) - N // 2) * (1000.0 / SAMPLE_RATE)
+        self.correlation_curve.setData(time_axis, display_data)
+        
+        peak_index = np.argmax(np.abs(display_data))
+        peak_value = display_data[peak_index]
+        # ピークの時間は、中心からの相対時間
+        peak_time = (peak_index - N // 2) * (1000.0 / SAMPLE_RATE)
+
+        self.peak_scatter.setData([peak_time], [peak_value])
+        self.peak_text.setText(f"{peak_value:.3f}")
+        self.peak_text.setPos(peak_time, peak_value)
+
+    def _cycle_y_zoom(self):
+        self.current_y_zoom_index = (self.current_y_zoom_index + 1) % len(Y_ZOOM_LEVELS)
+        self._apply_y_zoom()
+
+    def _reset_y_zoom(self):
+        self.current_y_zoom_index = 0
+        self._apply_y_zoom()
+
+    def _apply_y_zoom(self):
+        scale = Y_ZOOM_LEVELS[self.current_y_zoom_index]
+        y_range_span = (Y_AXIS_RANGE[1] - Y_AXIS_RANGE[0]) / scale
+        center = 0.0
+        self.plot_widget.getViewBox().setYRange(center - y_range_span / 2, center + y_range_span / 2, padding=0)
+        
+    def closeEvent(self, event):
+        self.stop_recording()
+        if self.amp_window: self.amp_window.close()
+        if self.phase_window: self.phase_window.close()
+        event.accept()
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
