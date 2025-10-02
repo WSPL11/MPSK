@@ -94,6 +94,7 @@ class MainWindow(QMainWindow):
         self.equalizer_coeffs = None
         self.amp_window = None
         self.phase_window = None
+        # ★変更点: 4つ目のウィンドウを保持する変数を初期化
         self.phase_end_shift_window = None
         
         self._load_equalizer_coeffs()
@@ -139,7 +140,7 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.equalizer_checkbox)
         
         status_layout = QHBoxLayout()
-        self.status_label = QLabel("ステータス: 待機中")
+        self.status_label = QLabel("ステータタス: 待機中")
         self.db_level_label = QLabel("入力レベル: --- dBFS")
         self.level_feedback_label = QLabel("")
         status_layout.addWidget(self.status_label, 1)
@@ -161,10 +162,12 @@ class MainWindow(QMainWindow):
         bottom_axis.setStyle(tickFont=tick_font)
         
         vb = self.plot_widget.getViewBox()
+        half_width_ms = GRAPH_VIEWPORT_WIDTH_MS / 2.0
+        vb.setXRange(-half_width_ms, half_width_ms, padding=0)
         vb.setYRange(Y_AXIS_RANGE[0], Y_AXIS_RANGE[1], padding=0)
-        
-        # ★変更点: X軸の固定設定と手動目盛り設定を削除
-        # これによりX軸は動的に変更可能になる
+        vb.setLimits(xMin=-half_width_ms, xMax=half_width_ms)
+        x_ticks = [(i, str(i)) for i in range(-4, 5, 2)] 
+        bottom_axis.setTicks([x_ticks])
 
         self.plot_widget.showGrid(x=True, y=True)
         pen = pg.mkPen(color=(0, 120, 215), width=2)
@@ -210,6 +213,7 @@ class MainWindow(QMainWindow):
             self.phase_window.plot_widget.getAxis('bottom').setTicks([freq_ticks])
         self.phase_window.show()
         
+        # ★変更点: 4つ目のウィンドウを作成して表示
         if self.phase_end_shift_window is None:
             self.phase_end_shift_window = PlotWindow(title="位相特性 (終端シフト)", x_label="frequency [Hz]", y_label="Phase")
             self.phase_end_shift_window.plot_widget.setXRange(0, 48000)
@@ -241,6 +245,7 @@ class MainWindow(QMainWindow):
         
         if self.amp_window: self.amp_window.close()
         if self.phase_window: self.phase_window.close()
+        # ★変更点: 4つ目のウィンドウを閉じる
         if self.phase_end_shift_window: self.phase_end_shift_window.close()
             
         self.is_recording = False
@@ -289,22 +294,12 @@ class MainWindow(QMainWindow):
         
         peak_index_corr = np.argmax(np.abs(normalized_correlation))
         window_size = 1024
-        
-        cir_window = np.zeros(window_size, dtype=np.float32)
-        center_point = window_size // 2
-        source_start = peak_index_corr - center_point
-        source_end = peak_index_corr + center_point
-        dest_start = 0
-        if source_start < 0:
-            dest_start = -source_start
-            source_start = 0
-        dest_end = window_size
-        if source_end > len(normalized_correlation):
-            dest_end = window_size - (source_end - len(normalized_correlation))
-            source_end = len(normalized_correlation)
-        copy_length = source_end - source_start
-        if copy_length > 0:
-            cir_window[dest_start : dest_start + copy_length] = normalized_correlation[source_start:source_end]
+        start_index = max(0, peak_index_corr - window_size // 2)
+        end_index = start_index + window_size
+        if end_index > len(normalized_correlation):
+            end_index = len(normalized_correlation)
+            start_index = end_index - window_size
+        cir_window = normalized_correlation[start_index:end_index]
 
         final_cir = cir_window
         if self.equalizer_coeffs is not None and self.equalizer_checkbox.isChecked():
@@ -313,76 +308,68 @@ class MainWindow(QMainWindow):
                 equalized_freq_domain = freq_domain_cir * self.equalizer_coeffs
                 final_cir = np.fft.ifft(equalized_freq_domain).real
 
-        # ★変更点: _update_graphにCIRの開始サンプル位置を渡す
-        self._update_graph(final_cir, source_start)
+        self._update_graph(final_cir)
 
         if self.amp_window and self.phase_window:
+            # --- 先頭シフト版の計算 ---
             peak_index_window = np.argmax(np.abs(final_cir))
-            shifted_cir = np.roll(final_cir, -peak_index_window)
+            start_shifted_cir = np.roll(final_cir, -peak_index_window)
 
-            N = len(shifted_cir)
+            N = len(start_shifted_cir)
             if N > 0:
-                cir_fft = np.fft.fft(shifted_cir)
+                cir_fft = np.fft.fft(start_shifted_cir)
                 freqs = np.fft.fftfreq(N, d=1.0/SAMPLE_RATE)
                 
                 positive_mask = freqs >= 0
                 freqs = freqs[positive_mask]
                 cir_fft = cir_fft[positive_mask]
                 
+                # 振幅特性 (先頭シフト版から計算)
                 power_spectrum = np.abs(cir_fft)**2
                 avg_power = np.mean(power_spectrum)
                 power_db = 10 * np.log10(power_spectrum / avg_power) if avg_power > 1e-12 else np.full_like(power_spectrum, -200)
                 
+                # 位相特性 (先頭シフト版)
                 phase_wrapped = np.angle(cir_fft)
                 phase = phase_wrapped / (2 * np.pi)
 
                 self.amp_window.update_plot(freqs, power_db)
                 self.phase_window.update_plot(freqs, phase)
 
-        if self.phase_end_shift_window:
-            peak_index_window = np.argmax(np.abs(final_cir))
-            shift_amount = (len(final_cir) - 1) - peak_index_window
-            end_shifted_cir = np.roll(final_cir, shift_amount)
-            
-            N_end = len(end_shifted_cir)
-            if N_end > 0:
-                cir_fft_end = np.fft.fft(end_shifted_cir)
-                freqs_end = np.fft.fftfreq(N_end, d=1.0/SAMPLE_RATE)
-
-                positive_mask_end = freqs_end >= 0
-                freqs_end = freqs_end[positive_mask_end]
-                cir_fft_end = cir_fft_end[positive_mask_end]
+            # ★変更点: 終端シフト版の位相特性を計算
+            if self.phase_end_shift_window:
+                shift_amount = (len(final_cir) - 1) - peak_index_window
+                end_shifted_cir = np.roll(final_cir, shift_amount)
                 
-                phase_wrapped_end = np.angle(cir_fft_end)
-                phase_end = phase_wrapped_end / (2 * np.pi)
+                N_end = len(end_shifted_cir)
+                if N_end > 0:
+                    cir_fft_end = np.fft.fft(end_shifted_cir)
+                    freqs_end = np.fft.fftfreq(N_end, d=1.0/SAMPLE_RATE)
 
-                self.phase_end_shift_window.update_plot(freqs_end, phase_end)
+                    positive_mask_end = freqs_end >= 0
+                    freqs_end = freqs_end[positive_mask_end]
+                    cir_fft_end = cir_fft_end[positive_mask_end]
+                    
+                    phase_wrapped_end = np.angle(cir_fft_end)
+                    phase_end = phase_wrapped_end / (2 * np.pi)
 
-    # ★変更点: メソッドのシグネチャとロジックを更新
-    def _update_graph(self, correlation_data: np.ndarray, time_offset_samples: int):
+                    self.phase_end_shift_window.update_plot(freqs_end, phase_end)
+
+    def _update_graph(self, correlation_data: np.ndarray):
         display_data = correlation_data
         N = len(display_data)
         if N == 0: return
 
-        # データの絶対時間軸を計算
-        time_offset_ms = time_offset_samples * (1000.0 / SAMPLE_RATE)
-        time_axis = time_offset_ms + np.arange(N) * (1000.0 / SAMPLE_RATE)
-        
-        # ピークの絶対時間を探す
-        peak_index = np.argmax(np.abs(display_data))
-        peak_time_ms = time_axis[peak_index]
-
-        # ピークが中央に来るようにX軸の表示範囲を動的に設定
-        half_width_ms = GRAPH_VIEWPORT_WIDTH_MS / 2.0
-        self.plot_widget.setXRange(peak_time_ms - half_width_ms, peak_time_ms + half_width_ms, padding=0)
-
-        # データをプロット
+        time_axis = (np.arange(N) - N // 2) * (1000.0 / SAMPLE_RATE)
         self.correlation_curve.setData(time_axis, display_data)
         
+        peak_index = np.argmax(np.abs(display_data))
         peak_value = display_data[peak_index]
-        self.peak_scatter.setData([peak_time_ms], [peak_value])
+        peak_time = (peak_index - N // 2) * (1000.0 / SAMPLE_RATE)
+
+        self.peak_scatter.setData([peak_time], [peak_value])
         self.peak_text.setText(f"{peak_value:.3f}")
-        self.peak_text.setPos(peak_time_ms, peak_value)
+        self.peak_text.setPos(peak_time, peak_value)
 
     def _cycle_y_zoom(self):
         self.current_y_zoom_index = (self.current_y_zoom_index + 1) % len(Y_ZOOM_LEVELS)
@@ -402,6 +389,7 @@ class MainWindow(QMainWindow):
         self.stop_recording()
         if self.amp_window: self.amp_window.close()
         if self.phase_window: self.phase_window.close()
+        # ★変更点: 4つ目のウィンドウを閉じる
         if self.phase_end_shift_window: self.phase_end_shift_window.close()
         event.accept()
 
