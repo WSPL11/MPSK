@@ -1,0 +1,869 @@
+#define _CRT_SECURE_NO_WARNINGS
+
+#include<stdio.h>
+#include<stdlib.h>
+#include<math.h>
+#include "mtrand.h"
+#include "kfcomp2013.h"
+#define PI 3.1415926535				//円周率
+#define CP (0)						//GI 16
+#define F0 (1)						//サブキャリア数64
+#define NSYMB (255)					//送信データビット数
+#define MAVEN (5)				    //送信フレーム数
+#define MRN 1						//取得ループ数
+#define NFRBIT 1					//送信ビット数
+#define NMDI (1<<NFRBIT)			//変調多値数
+#define AENRINI 0.					//Eb/N0初期値
+#define AENRDLT 2.5					//Eb/N0ステップ量
+#define NSEEDI 10					//乱数初期値
+#define NTXENC 0					//0:non, 1:DifEnc
+#define NRXDEM 0					//0:Coh, 1:DifCoh, 2:DifDet
+#define NOVSM (1)					//オーバーサンプルの割合（要注意）
+#define NFADE  0					//フェージング 0:off, 1:on
+#define NFADNO 1					//フェージングパス数(max 16)
+#define NPHRAN 0					//位相ランダムSW 0:off, 1:on フェージング時ON
+#define NRXBRN 1					//受信アンテナブランチ数
+#define AOFFINI 0.					//周波数オフセット初期値
+#define AOFFDLT 0.					//周波数オフセットステップ量
+#define AFDINI (0.)					//ドップラー初期値
+#define AFDDLT 0.					//ドップラーステップ量
+#define NSYMBR (NRXBRN*NSAMF0)		//送信データビット数(受信アンテナ)
+#define NSAMP (NSYMB*NOVSM)			//全体サンプル数CP分で増えるのは256*80 (NSYMB*NOVSM)
+#define NSAMPR (NRXBRN*NSYMB*NOVSM)	//全体サンプル数(受信アンテナ) (NRXBRN*NSYMB*NOVSM)
+#define LSIMAX 214748647			// MAX signed long int
+#define ROOT2 (1.41421356237)
+#define Fc (0.75)
+#define N1 240 //RS符号を構成するRSシンボル数
+#define N2 240 //送信される情報に相当するRSシンボル数計算用.RN2に格納される
+#define N3 8   //1RSシンボルを構成するビット数
+#define NSAMF0 (NSYMB*4) //CPを除去した数
+#define m 8
+
+FILE* fp0, * fpg, * fp3, * fp4, * fp5;
+double randnrm(void);
+void Mdatagen(unsigned int, int*, int* );
+void datagen(int*);
+void encgen(int*, int*);
+void modgen(COMPLEX*, int*);
+void correlation(COMPLEX*, COMPLEX*, COMPLEX*);
+void cohdem(int*, int*, COMPLEX*);
+void difdem(int*, COMPLEX*, COMPLEX*);
+void errcnt(int*, int*, int*, int*, int, int*, int*);
+void berprn(double*, double*, double*, int*, int*);
+//関数形式追加
+void raylf(COMPLEX*, int, long*, long, double);
+COMPLEX	raylfcal(double, int, long*, double, double, double, double, double);
+void channelx(COMPLEX*, COMPLEX*, COMPLEX*, COMPLEX*, long*, long, double, 
+	double, double*, double*, double*, int*, double);
+void chanprof(double*, double*, double*, int*);
+void modsig(COMPLEX*, COMPLEX*);
+void sigdem(COMPLEX*, COMPLEX*);
+void awgngenx(COMPLEX*, double);
+void ffttable(int, int*, COMPLEX*);
+void fftope(COMPLEX*, int, int, int*, COMPLEX*);
+void Nyquist(double*);
+void txfft(COMPLEX*, int*, COMPLEX*);
+void rxfft(COMPLEX*, int*, COMPLEX*);
+void constfp(COMPLEX*, COMPLEX*);
+void cpcreate(COMPLEX*, COMPLEX*);
+
+int main(void) {
+	int* itxinf, * itxmod, * irxdem, * irxinf, * itxmod2;
+	COMPLEX* ctxmod, * cchwgn, * crxdem,* ctxmod2;
+	COMPLEX* cchtapf, * ctxsig, * crxsig, *cpctxsig, *crxdeme;
+	double* aofd, * aaqd, * aaqs , * itxinf2;
+	int* ndly;
+	long lfsymb, lfinte;
+	int* irev;
+	double* chf;
+	COMPLEX* carg,*autosignal ;
+	int TRS = 0;
+
+	unsigned int reg = 129;
+
+	unsigned int i0, i1;
+	double ber[MRN], ser[MRN], snrdb[MRN], snrdbx, afd, aoff, bler[MRN];
+	int nerrnb[MRN], nerrns[MRN], nerrb, nerrs, nerradj, nbler;
+	//reg = (unsigned int*)malloc(sizeof(unsigned int) * NSAMF0);
+	itxinf = (int*)malloc(sizeof(int) * NSAMF0);
+	itxinf2 = (int*)malloc(sizeof(int) * NSAMF0);
+	itxmod = (int*)malloc(sizeof(int) * NSAMF0);
+	itxmod2 = (int*)malloc(sizeof(int) * NSAMF0);
+	irxinf = (int*)malloc(sizeof(int) * NSAMF0);
+	ctxmod = (COMPLEX*)malloc(sizeof(COMPLEX) * NSAMF0 * 4);
+	ctxmod2 = (COMPLEX*)malloc(sizeof(COMPLEX) * NSAMF0 * 4);
+	irxdem = (int*)malloc(sizeof(int) * NSAMF0);
+	crxdem = (COMPLEX*)malloc(sizeof(COMPLEX) * NSAMF0);
+	ctxsig = (COMPLEX*)malloc(sizeof(COMPLEX) * NSAMF0);
+	crxsig = (COMPLEX*)malloc(sizeof(COMPLEX) * NSAMPR);
+	cchwgn = (COMPLEX*)malloc(sizeof(COMPLEX) * NSAMPR);
+	cchtapf = (COMPLEX*)malloc(sizeof(COMPLEX) * NSAMP);
+	crxdeme = (COMPLEX*)malloc(sizeof(COMPLEX) * NSAMP);
+	aofd = (double*)malloc(sizeof(double) * NFADNO);
+	aaqd = (double*)malloc(sizeof(double) * NFADNO);
+	aaqs = (double*)malloc(sizeof(double) * NFADNO);
+	ndly = (int*)malloc(sizeof(int) * NFADNO);
+	chf = (double*)malloc(sizeof(double) * NSAMF0);
+	irev = (int*)malloc(sizeof(int) * NSAMF0);
+	carg = (COMPLEX*)malloc(sizeof(COMPLEX) * (NSYMB - 1));//-1いる？
+	cpctxsig = (COMPLEX*)malloc(sizeof(COMPLEX) * NSAMP);
+	autosignal = (int*)malloc(sizeof(int) * NSAMF0 * 4);
+	
+
+	if (itxinf == NULL || itxmod == NULL || irxdem == NULL || irxinf == NULL
+		|| ctxmod == NULL || cchwgn == NULL || crxdem == NULL || cchtapf == NULL
+		|| aofd == NULL || aaqd == NULL || aaqs == NULL || ndly == NULL
+		|| ctxsig == NULL || crxsig == NULL) {
+		printf("error! :メモリを確保できませんでした！\n");
+		exit(1);
+	}
+
+	fp0 = fopen("BER.txt", "w");
+	fpg = fopen("PRNPRN.txt", "w");
+	fp3 = fopen("ctxsig.txt", "w");
+	fp4 = fopen("crxsig.txt", "w");
+	fp5 = fopen("example.txt", "w");
+	if (fp0 == NULL || fpg == NULL || fp3 == NULL || fp4 == NULL || fp5 == NULL) {
+		printf("error! :ファイルを開けません．\n");
+		exit(1);
+	}
+	ffttable(F0, irev, carg);
+	// ライスフェージングパラメータ入力
+	chanprof(aofd, aaqd, aaqs, ndly);
+	// 新規追加(end)
+
+	if (NTXENC == 1) nerradj = 1;
+	else nerradj = 0;
+	
+	//	for (int i2 = 0; i2 < 2; i2++) {
+			int i2 = 0;
+			double R[2] = { 0.75, 0.5 };//符号化率
+			int RN2[2] = { 0, 0 };//初期設定
+			RN2[i2] = (int)(R[i2] * N2 + 0.999999);//doubleが影響しないように変更
+			TRS = (N1 - RN2[i2]) / 2;//30~60
+			//printf("TRS = %d %lf", TRS, R[i2]);
+			for (i0 = 0; i0 < MRN; i0++) {
+				init_genrand(NSEEDI);
+				nerrb = 0;		nerrs = 0; nbler = 0;			
+				snrdb[i0] = (double)i0 * AENRDLT + AENRINI;
+				snrdbx = snrdb[i0] + 10. * log10((double)NFRBIT);
+				// フェージング・周波数オフセット変数定義追加
+				afd = (double)i0 * AFDDLT + AFDINI;
+				aoff = (double)i0 * AOFFDLT + AOFFINI;
+				lfinte = (long)((double)(LSIMAX - NSYMB) / (double)(MAVEN + 1));
+				//printf("%zu",INT_MAX);
+				//getchar();
+				//return;
+
+				for (i1 = 0; i1 < MAVEN; i1++) {
+					// レイリーフェージングシンボルポインタ定義
+					lfsymb = (long)lfinte * i1;
+	
+					Mdatagen(reg, itxinf, itxinf2);						
+					//datagen(itxinf);
+					
+					encgen(itxinf, itxmod);
+					modgen(ctxmod ,itxmod);//itxmod変更
+					modgen(ctxmod2, itxinf2);
+					correlation(ctxmod, ctxmod2, autosignal);
+					//modsig(ctxmod, ctxsig);
+					//txfft(ctxsig, irev, carg);//IFFT
+					//cpcreate(ctxsig, cpctxsig);//ガードインターバル付加					
+					channelx(crxsig, ctxsig, cchwgn, cchtapf, &lfsymb, lfinte, afd,
+						aoff, aofd, aaqd, aaqs, ndly, snrdbx);		
+					//sigdem(crxdem, crxsig);	//ガードインターバル削除	
+					//rxfft(crxdem, irev, carg);//FFT
+					if ((NRXDEM == 0) || (NRXDEM == 1)) cohdem(irxdem, irxinf, crxdem);
+					if (NRXDEM == 2) difdem(irxinf, crxdem, crxdeme);//P/Sして復調処理
+					//errcnt(itxinf, irxinf, &nerrb, &nerrs, nerradj, &nbler, &TRS);
+					//printf(" %d  %d  %d \n", nerrb ,nbler, TRS);
+				}
+				nerrnb[i0] = nerrb;		nerrns[i0] = nerrs;		
+				ber[i0] = (double)nerrb / ((double)NSAMF0  - F0) / (double)MAVEN / (double)NFRBIT;
+				bler[i0] = (double)nbler / (double)MAVEN / 17.;
+				ser[i0] = (double)nerrs / ((double)NSAMF0 - nerradj) / MAVEN;
+				//printf("%f [dB] BER = %6.2e BLER = %6.2e SER = %6.2e\n", snrdb[i0], ber[i0], bler[i0], ser[i0]);
+			}	//SER = %6.2e, ser[i0]
+		//	berprn(snrdb, ber, ser, nerrnb, nerrns);
+		//}
+	
+	fclose(fp0);
+	fclose(fpg);
+	fclose(fp3);
+	fclose(fp4);
+	fclose(fp5);
+	free(itxinf);
+	free(itxinf2);
+	free(irxinf);
+	free(ctxmod);
+	free(ctxmod2);
+	free(cchwgn);
+	free(ctxsig);
+	free(crxsig);
+	free(aofd);
+	free(aaqd);
+	free(aaqs);
+	free(chf);
+	free(ndly);
+	free(irev);
+	free(itxmod);
+	free(irxdem);
+	free(cchtapf);
+	free(cpctxsig);
+	free(crxdem);
+	free(crxdeme);
+	free(autosignal);
+
+
+	printf("処理が完了しました。Enterキーを押して終了します。");
+	getchar(); // Enterキーの入力を待つ
+	return 0;
+}
+double randnrm(void) {
+	double s, r, t;
+	s = genrand_res53();
+	if (s == 0.0) s = 0.000000001;
+	r = sqrt(-2.0 * log(s));
+	t = 2.0 * PI * genrand_res53();
+	return (r * sin(t));
+}
+
+
+
+void Mdatagen(unsigned int reg, int* itxinf , double* itxinf2) {
+
+	const unsigned int bit1 = 1 << (1 - 1);
+	const unsigned int bit5 = 1 << (5 - 1);
+	const unsigned int bit6 = 1 << (6 - 1);
+	const unsigned int xor_dat = bit1 | bit5 | bit6;
+	const unsigned int bitM = 1 << (m - 1);
+
+	unsigned int i,i1;
+	
+
+	//printf("bit1 %d bit2 %d bit3 %d xor_dat = %d", bit1, bit5, bit6, xor_dat);
+	//	(reg) = 1;
+	//seed
+		for (i = 0; i < NSAMF0; i++) {
+			if (((reg)&bitM) == bitM) //&と==の優先度に注意
+			{
+				(reg) = (((reg) ^ xor_dat) << 1) | 1; //OR1で最後のビットが1になる
+				*(itxinf + i) = 1;
+				//printf("i = %d reg %u %d \n",i,reg, *(itxinf + i));
+				
+			}
+
+			else {
+				(reg) = (reg) << 1;
+				
+				*(itxinf + i) = 0;
+				
+				//printf("i = %d reg %u %d \n", i, reg, *(itxinf + i));
+			}
+		}
+	
+		//for (i = 0; i < 10; i++) { printf("i = %d reg %u %d \n", i, reg, *(itxinf + i)); }
+		//return 0;
+
+		for (i1 = 0; i1 < NSAMF0; i1++) {
+			if (5 > i1) { *(itxinf2 + i1) = (double)*(itxinf + i1)  + (double)*(itxinf + i1 + NSAMF0 - 5) * 0.5 ;  }
+			else {*(itxinf2 + i1) = (double)*(itxinf + i1) + (double)*(itxinf + i1  - 5) * 0.5 ;
+			}
+		//	printf("i1 = %d  %d \n", i1, *(itxinf2 + i1));
+		}
+
+}
+
+void datagen(int* itxinf) {
+	unsigned int i = 0;
+	int iwk;
+
+	for (i = 0; i < NSAMF0; i++) {
+		iwk = (int)(genrand_res53() * (double)NMDI);
+		*(itxinf + i) = ((iwk + NMDI) % NMDI);
+	}
+}
+
+
+void encgen(int* itxinf, int* itxmod) {//差動符号化
+	unsigned int i = 0, i0 = 0, j = 0;
+
+	if (NTXENC == 0) {
+		for (i = 0; i < NSAMF0; i++) *(itxmod + i) = *(itxinf + i);
+	}
+
+	else if (NTXENC == 1) {
+		for (i0 = 0; i0 < NSAMF0; i0+=NSYMB) {
+			*(itxmod + i0) = 0;			
+			//	printf("%d  %d\n", j, *(itxmod + i0));
+	
+		}
+		for (i0 = 0; i0 < F0; i0 ++) {
+			for (i = 1; i < NSYMB; i++) {
+				*(itxmod + i + NSYMB * i0) = (*(itxmod + i - 1 + NSYMB * i0) + *(itxinf + i + NSYMB * i0)) % NMDI;
+			//	printf("itxmod  %d ", *(itxmod + i + NSYMB * i0));
+			}
+		}		
+	}
+	
+}
+
+void modgen(COMPLEX* ctxmod, int* itxmod) {//0->1,0に
+	unsigned int i;
+	double ath;
+	COMPLEX cwk, crot;
+	for (i = 0; i < NSAMF0  ; i++) {
+		ath = 2. * PI / (double)NMDI * ((double)*(itxmod + i));
+		f0cset(0., ath, &cwk);
+		f0cexp(&cwk, &crot);
+		f0ccopy(&crot, (ctxmod + i));
+		
+	}
+	/*for (i = 0; i < 10; i++) {
+	printf("%lf ,%lf \n", (ctxmod + i)->R, (ctxmod + i)->I);
+	}*/
+}
+
+void cohdem(int* irxdem, int* irxinf, COMPLEX* crxdem) {//符号化
+	unsigned int i, irxbrn;
+	double awk;
+	COMPLEX cwk;
+	for (i = 0; i < NSAMF0; i++) {
+		f0cset(0., 0., &cwk);
+		for (irxbrn = 0; irxbrn < NRXBRN; irxbrn++) f1cadd(&cwk, (crxdem + i + irxbrn * NSAMF0));
+		awk = fdnatan2(&cwk);
+		*(irxdem + i) = (int)(awk * (double)NMDI + 0.5) % NMDI;
+	}
+	if (NRXDEM == 0) {
+		for (i = 0; i < NSAMF0; i++) *(irxinf + i) = *(irxdem + i);
+	}
+	else if (NRXDEM == 1) {//差動
+		for (i = 1; i < NSAMF0; i++) {
+			*(irxinf + i) = (*(irxdem + i) - *(irxdem + i - 1) + NMDI) % NMDI;
+		}
+	}
+}
+
+void difdem(int* irxinf, COMPLEX* crxdem, COMPLEX* crxdeme) {//demod irxdemで配列を変更
+	unsigned int i, i0, irxbrn;
+	COMPLEX cdd, cwk, csum;
+	double awk;
+	*(irxinf) = 0;
+	
+	
+	for (i0 = 0; i0 < NSYMB; i0++) {//PS変換
+		for (i = 0; i < F0; i++) {
+			f0ccopy((crxdem + i + F0 * i0), (crxdeme + NSYMB * i + i0));
+			
+		}
+	}
+
+	//for (i0 = 0; i0 < 256*2+2; i0++) {printf("%d %lf %lf \n",  i0, (crxdem + i0)->R, (crxdeme + i0)->R);}
+	//printf("%d %lf %lf \n", i0, (crxdem + i0)->R, (crxdeme +  i0)->R);}
+	//for (i0 = 0; i0 < 257; i0++) {
+	//printf("%d  %lf %lf \n",i0 ,(crxdeme + i0)->R, (crxdeme + i0)->I);}
+	//for (i0 = 0; i0 < F0; i0++) {
+		for (i = 1; i < NSAMF0; i++) {
+			f0cset(0., 0., &csum);
+			for (irxbrn = 0; irxbrn < NRXBRN; irxbrn++) {//アンテナブランチ数関係で間違ったらNSYMBに戻す
+				cwk = fcconjg((crxdeme + i - 1  + irxbrn * NSYMB));
+				cdd = fccmul((crxdeme + i  + irxbrn * NSYMB), &cwk);
+				f1cadd(&csum, &cdd);
+			}
+			awk = fdnatan2(&csum);
+			
+			*(irxinf + i ) = (int)(awk * (double)NMDI + 0.5) % NMDI;
+		//	printf("%d  %lf \n", i, awk);
+		
+		}
+//}
+		
+
+}
+//err
+void errcnt(int* itxinf, int* irxinf, int* nerrb, int* nerrs, int nerradj, int* nbler, int* TRS) {
+	unsigned int i0, i1, i2, i3, j, nsumb = 0, nsums = 0, iwktx, iwkrx;
+	double adattx, adatrx;
+	static int array[NSAMF0];
+	static int array2[NSAMF0];//RS
+	for (int i = 0; i < NSAMF0; i++) {
+		array[i] = 0;
+	}
+
+	for (j = 0; j < F0; j++) {//プリアンブル飛ばす
+		for (i0 = nerradj; i0 < NSYMB; i0++) {
+			adattx = (double)*(itxinf + i0 + NSYMB * j);
+			adatrx = (double)*(irxinf + i0 + NSYMB * j);
+			//printf("tx %d  %lf,rx %lf \n ", i0, adattx, adatrx);
+			if (adattx != adatrx) nsums++;
+			for (i1 = 0; i1 < NFRBIT; i1++) {
+				iwktx = ((int)((adattx + pow(2., (double)i1)) / pow(2., ((double)i1 + 1)))) % 2;
+				iwkrx = ((int)((adatrx + pow(2., (double)i1)) / pow(2., ((double)i1 + 1)))) % 2;
+				if (iwktx != iwkrx) nsumb++;//0~2			
+			}
+			*nerrs += nsums;	*nerrb += nsumb;
+			array[i0 + NSYMB * j] = nsumb;//0~2
+			//printf("%d %d \n", i0 + NSYMB * j, nsumb);
+			nsumb = 0;
+		}
+	}
+
+//RS
+
+	for (int i = 0; i < NSAMF0; i++) {
+		array2[i] = 0;
+	}
+
+	for (i0 = 0; i0 < NSYMB; i0++) {
+		for (int i = 0; i < F0; i++) {
+			array2[ F0 * i0 + i] = array[ NSYMB * i + i0];
+		//	printf("%d %d \n", array2[NSYMB * i + i0], array[i + F0 * i0]);
+		}
+	}
+
+	//for (i3 = 0; i3 < (17); i3++) {//RS符号数17,全RSはMAVEN*17
+	//	int bller = 0;
+	//	for (i2 = F0; i2 < 960 + F0; i2 += 4) {//(960/4=240回回る)
+	//		int sum = 0;//4個の中の誤り個数
+	//		for (int k = 0; k < 4; k++) {//4つずつの誤り数を格納して個数数えるi3 * 960 +
+	//			if ((array2[i3 * 960 + i2 + k]) != 0) {
+	//				sum++;
+	//			}
+	//			//printf("%d\n", i3 * 960 + i2 + k);
+	//		
+	//		}
+	//		if (sum != 0) {//4個の中に1つでも1があったら
+	//			bller++;//誤ったRS符号数+1
+	//		}
+	//	}
+	//	//if (i2 > 240) { printf("%d \n", bller); }	
+	//	if (bller > *TRS) {//0~240>(30or60)
+	//		*nbler += 1;//誤りは最大17*MAVEN
+	//	}
+	//	//printf("%d\n", *nbler); 
+	//}
+}
+void berprn(double* snrdb, double* ber, double* ser, int* nerrnb, int* nerrns) {
+	unsigned int i;
+	for (i = 0; i < MRN; i++) {
+		fprintf(fp0, "%6.3f    %6.2e    %12d    %6.2e    %12d\n", *(snrdb + i), *(ber + i), *(nerrnb + i), *(ser + i), *(nerrns + i));
+	}
+}
+void ffttable(int infft, int* irev, COMPLEX* carg) {
+	int i, i0, i1, iwk1, iwk2, inordfft, inordfft1, ifftexp;
+	double dwk;
+	if (infft <= 0) {
+		printf("Error!! 0以下の値です．");
+		(void)getchar();
+		exit(1);
+	}
+	else if ((infft & (infft - 1)) != 0) {
+		printf("Error!! 2のべき乗ではありません．");
+		(void)getchar();
+		exit(1);
+	}
+	inordfft = (int)((log((double)infft) / log(2.)) + 0.5);
+	*(irev + 0) = 0;
+	iwk1 = iwk2 = 1;
+	for (i = 1; i <= inordfft; i++) {
+		iwk2 *= 2;
+		inordfft1 = infft / iwk2;
+		for (i0 = iwk1; i0 < iwk2; i0++) {
+			*(irev + i0) = *(irev + (i0 - iwk1)) + inordfft1;
+		}
+		iwk1 = iwk2;
+	}
+	inordfft1 = 0;
+	for (i0 = 1; i0 < infft; i0 *= 2) {
+		ifftexp = 0;
+		for (i1 = 0; i1 < infft / (i0 * 2); i1++) {
+			dwk = ((2. * PI * (double)ifftexp) / (double)(infft));
+			(carg + inordfft1)->R = cos(dwk);
+			(carg + inordfft1)->I = -1. * sin(dwk);
+			ifftexp += i0;
+			inordfft1++;
+
+		}
+	}
+}
+void fftope(COMPLEX* cfftwk, int infft, int infftinv, int* irev, COMPLEX* carg) {
+	COMPLEX cwk, * cwk1, ctemp0, ctemp1, * cargcp;
+	int inffthf, inffthf1, istep, ifftdiv, ifftexp;
+	int i, i0, i1, i2 = 0, j;
+	if (infft <= 0) {
+		printf("Error!! 0以下の値です．");
+		(void)getchar();
+		exit(1);
+	}
+	else if ((infft & (infft - 1)) != 0) {
+		printf("Error!! 2のべき乗ではありません．");
+		(void)getchar();
+		exit(1);
+	}
+	cwk1 = (COMPLEX*)malloc(sizeof(COMPLEX) * infft);
+	cargcp = (COMPLEX*)malloc(sizeof(COMPLEX) * (infft - 1));
+	for (i = 0; i < infft; i++) f0ccopy((cfftwk + i), (cwk1 + i));
+	for (i = 0; i < infft - 1; i++) f0ccopy((carg + i), (cargcp + i));
+	inffthf = infft / 2;
+	for (i = 0; i < infft - 1; i++)(cargcp + i)->I = (cargcp + i)->I * infftinv;
+	for (istep = 1; istep < infft; istep *= 2) {
+		inffthf1 = inffthf * 2;
+		j = i2;
+		for (ifftdiv = 0; ifftdiv < infft; ifftdiv += inffthf1) {
+			ifftexp = 0;
+			i2 = j;
+			for (i0 = ifftdiv; i0 < ifftdiv + inffthf; i0++) {
+				i1 = (i0 + inffthf);
+				f0ccopy((cwk1 + i0), &ctemp0);
+				f0ccopy((cwk1 + i1), &ctemp1);
+				f0cadd(&ctemp0, &ctemp1, (cwk1 + i0));
+				f0csub(&ctemp0, &ctemp1, &cwk);
+				f0cmul(&cwk, (cargcp + i2), (cwk1 + i1));
+				ifftexp += istep;
+				i2++;
+			}
+		}
+		inffthf /= 2;
+	}
+	for (i = 0; i < infft; i++) f0ccopy((cwk1 + (*(irev + i))), (cfftwk + i));
+	//if (infftinv < 0) {
+		for (i0 = 0; i0 < infft; i0++) {
+			(cfftwk + i0)->R = (cfftwk + i0)->R / sqrt((double)infft);//電力等価にした5/12
+			(cfftwk + i0)->I = (cfftwk + i0)->I / sqrt((double)infft);
+		}
+	//}
+	free(cwk1);
+	free(cargcp);
+}//fdnatan2
+/* レイリーフェージング作成(RFG) by WSPL(2018.06.06) */
+//		cchtapf	:NSAMP個の伝送路特性を出力
+//		nwave	:フェージングの素波数
+//		lfsymb	:フェージングのシンボル時刻を規定
+//		lfinte	:フレーム間のフェージングシンボル数
+//		afd		:正規化最大ドップラー周波数
+// レイリーフェージング伝送路タップ配列作成
+void raylf(COMPLEX* cchtapf, int nwave, long* lfsymb, long lfinte, double afd)
+{
+	int i0, i1, iwk;
+	double ampr, ampi, awm;
+	double apiw0, apiw02, afsymbdlt;
+	COMPLEX cchtapx;
+	if ((*lfsymb < 0) || (*lfsymb > LSIMAX - lfinte)) {
+		printf("fading error! \n");
+		//		return(1);
+	}
+	ampr = sqrt(0.5 / (double)nwave);
+	ampi = sqrt(0.5 / ((double)nwave + 1.0));
+	awm = 2.0 * PI * afd;
+	apiw0 = PI / ((double)nwave + 1.0);
+	apiw02 = PI / (2.0 * (double)nwave + 1.0);
+	
+	if (afd == 0.) {
+		awm = 2.0 * PI * 0.01;
+		cchtapx = raylfcal(awm, nwave, lfsymb, ampr, ampi, apiw0, apiw02, 0.);
+		(*lfsymb)++;
+		for (i0 = 0; i0 < NSYMB; i0++) {
+			for (i1 = 0; i1 < NOVSM; i1++) {
+				iwk = i0 * NOVSM + i1;
+				f0ccopy(&cchtapx, (cchtapf + iwk));
+			}
+		}
+	}
+	else {
+		awm = 2.0 * PI * afd;
+		for (i0 = 0; i0 < NSYMB; i0++) {
+			for (i1 = 0; i1 < NOVSM; i1++) {
+				afsymbdlt = (double)i1 / (double)NOVSM;
+				cchtapx = raylfcal(awm, nwave, lfsymb, ampr, ampi, apiw0, apiw02, afsymbdlt);
+				iwk = i0 * NOVSM + i1;
+				f0ccopy(&cchtapx, (cchtapf + iwk));
+			}
+			(*lfsymb)++;
+		}
+	}
+}
+COMPLEX	raylfcal(double awm, int nwave, long* lfsymb, double ampr, double ampi,
+	double apiw0, double apiw02, double afsymbdlt)
+{
+	int i;
+	COMPLEX cwk;
+	double awmt, acoswmt, achtr, achti, ax, ab;
+
+	awmt = awm * ((double)(*lfsymb) + afsymbdlt);
+	acoswmt = cos(awmt);
+	achtr = sqrt(2.0) * acoswmt;
+	achti = 0.;
+	for (i = 1; i <= nwave; i++) {
+		ax = 2.0 * cos(cos(apiw02 * (double)i) * awmt);
+		ab = apiw0 * (double)i;
+		achtr += cos(ab) * ax;
+		achti += sin(ab) * ax;
+	}
+	achtr *= ampr;
+	achti *= ampi;
+	cwk.R = achtr;
+	cwk.I = achti;
+	return(cwk);
+}
+
+void channelx(COMPLEX *crxsig, COMPLEX *ctxsig, COMPLEX *cchwgn, COMPLEX *cchtapf, long *lfsymb, long lfinte, 
+	double afd, double aoff, double *aofd, double *aaqd, double *aaqs, int *ndly, double snrdbx){
+	unsigned int i, i0, i1;
+	COMPLEX cwk,crot,coff,cwk0,cwk1,ctap0;
+	int nwave,nfdpt0,iwk,irxbrn;
+	double awk;
+	long lfsymb0;
+	int nfdpt[72]={8,  9, 11, 14, 15, 18, 20, 21, 23, 26, 
+		29, 30, 33, 35, 36, 39, 41, 44, 48, 50, 
+		51, 53, 54, 56, 63, 65, 68, 69, 74, 75, 
+		78, 81, 83, 86, 89, 90, 95, 96, 98, 99, 
+		105,111,113,114,116,119,120,125,128,131, 
+		134,135,138,140,141,146,153,155,156,158, 
+		165,168,173,174,176,179,183,186,189,191, 
+		194,198};
+
+	lfsymb0=*lfsymb;
+	awgngenx(cchwgn,snrdbx);
+	for(i=0;i<NSAMPR;i++) f0cset(0.,0.,(crxsig+i));
+	for(irxbrn=0;irxbrn<NRXBRN;irxbrn++){
+		if(NFADE == 1) {
+			for(i0=0;i0<NFADNO;i0++){
+				*lfsymb=lfsymb0;
+				nfdpt0=NRXBRN*i0+irxbrn;
+				nwave=nfdpt[nfdpt0];
+				if(NPHRAN==0) awk=0.;
+				else if(NPHRAN==1) awk=2.0*PI*genrand_res53();
+				f0cset(0.,awk,&cwk);
+				f0cexp(&cwk,&crot);
+				raylf(cchtapf, nwave, lfsymb, lfinte, afd);
+				for(i1=0;i1<NSAMP;i1++){
+					awk=2.0*PI*(*(aofd+i0))*afd/(double) NOVSM*(double) i1;
+					f0cset(0.,awk,&cwk);
+					f0cexp(&cwk,&coff);
+					f0cmul(&coff,&crot,&cwk0);
+					f1cfmul(*(aaqd+i0),&cwk0);
+					f0ccopy((cchtapf+i1),&cwk1);
+					f1cfmul(*(aaqs+i0),&cwk1);
+					f0cadd(&cwk0,&cwk1,&ctap0);
+					iwk=i1-(*(ndly+i0));
+//　配列処理に巡回処理を１行分追加（2018/09/20）
+					iwk=(iwk+NSAMP)%NSAMP;
+					if(iwk>=0) {
+						f0cmul((ctxsig+iwk),&ctap0,&cwk);
+						f1cadd((crxsig+i1+irxbrn*NSAMP),&cwk);
+					}
+
+				}
+			}
+		}
+		else {
+			if(NPHRAN==0) awk=0.;
+			else if(NPHRAN==1)awk=2.0*PI*genrand_res53();
+			f0cset(0.,awk,&cwk);
+			f0cexp(&cwk,&crot);
+			for(i0=0;i0<NSAMP;i0++) f0cmul((ctxsig+i0),&crot,(crxsig+i0+irxbrn*NSAMP));
+		}
+	}
+//
+	for(irxbrn=0;irxbrn<NRXBRN;irxbrn++){
+		for(i=0;i<NSAMP;i++){
+			f0ccopy((crxsig+i+irxbrn*NSAMP),&cwk);
+//			awk=(aoff/(double) NOVSM)*(double) i;　×2PIの修正（2018/07/13）
+			awk=2.0*PI*(aoff/(double) NOVSM)*(double) i;
+			f0cset(0.,awk,&cwk0);
+			f0cexp(&cwk0,&coff);
+			f1cmul(&cwk,&coff);
+			f0ccopy(&cwk,(crxsig+i+irxbrn*NSAMP));
+			f1cadd((crxsig+i+irxbrn*NSAMP),(cchwgn+i+irxbrn*NSAMP));
+		}
+	}
+}
+void chanprof(double* aofd, double* aaqd, double* aaqs, int* ndly) {
+	unsigned int i;
+	double apdb[16] = { 0., -6., -100., -100., -100., -100., -100., -100.,
+		-100., -100., -100., -100., -100., -100., -100. };
+	double adly[16] = { 0., 0.125, 100., 100., 100., 100., 100., 100.,
+		100., 100., 100., 100., 100., 100., 100. };
+	double akfc[16] = { 0., 0., 0., 0., 0., 0., 0., 0.,
+		0., 0., 0., 0., 0., 0., 0. };
+	double aofd0[16] = { 0., 0., 0., 0., 0., 0., 0., 0.,
+		0., 0., 0., 0., 0., 0., 0. };
+	double asap[16], awk, apsum;
+	
+	fprintf(fp0, "   Path  Power [dB]    Delay [T]    K-factor       offset\n");
+	fprintf(fp0, "   Path  Power [dB]    Delay [T]    K-factor       offset\n");
+	for (i = 0; i < NFADNO; i++) {
+		//		awk=pow(10.,(-1)*apdb[i]/20.);の修正
+		awk = pow(10., apdb[i] / 20.);
+		if (apdb[i] <= -100.) awk = 0.;
+		asap[i] = awk;
+		*(aofd + i) = aofd0[i];
+		fprintf(fp0, "%6d     %6.3f      %8.5f      %6.1f      %8.5f\n", i, apdb[i], adly[i], akfc[i], aofd0[i]);
+	}
+	apsum = 0.;
+	fprintf(fp0, "\n");
+	for (i = 0; i < NFADNO; i++) apsum += pow(asap[i], 2.);
+	for (i = 0; i < NFADNO; i++) {
+		*(aaqd + i) = sqrt(akfc[i] / (akfc[i] + 1.) / apsum) * asap[i];
+		*(aaqs + i) = sqrt(1. / (akfc[i] + 1.) / apsum) * asap[i];
+		if (akfc[i] >= 1000.) {
+			*(aaqd + i) = sqrt(1. / apsum) * asap[i];
+			*(aaqs + i) = 0.;
+		}
+		//		*(ndly)=(int) (adly[i]*(double) NOVSM);	の修正
+		*(ndly + i) = (int)(adly[i] * (double)NOVSM);
+	}
+}
+void modsig(COMPLEX* ctxmod, COMPLEX* ctxsig) {//縦横変換(0,256,512...->0,1,2...)ps
+	unsigned int i,i0;
+
+	for (i0 = 0; i0 < NSYMB; i0++) {
+		for (i = 0; i < F0; i++) {
+
+			f0ccopy((ctxmod + NSYMB * i + i0), (ctxsig + i + F0 * i0));
+			
+		}
+	}
+
+}
+// 評価用 crxsig->crxmod（ダイバーシチ受信対応）
+void sigdem(COMPLEX* crxdem, COMPLEX* crxsig) {
+	unsigned int i , j;
+	
+	for (i = 0; i < NSYMB; i++) {
+		for (j = 0; j < F0; j++) {
+			f0ccopy((crxsig + i * NOVSM + CP + j ),(crxdem + i * F0 + j));
+			//printf("R %d  %lf %lf \n", i * F0 + j, (crxsig + i * NOVSM + CP + j)->R, (crxdem + i * F0 + j)->R);
+		}	
+	}
+
+}
+// オーバーサンプルAWGN作成（ダイバーシチ受信対応）
+void awgngenx(COMPLEX* cchwgn, double snrdbx) {
+	unsigned int i;
+	double ampn;
+	ampn = pow(10, (-1) * snrdbx / 10);
+	for (i = 0; i < NSAMP * NRXBRN; i++) {//NSAMPにした
+		(cchwgn + i)->R = randnrm() * sqrt(ampn / 2) * 1;
+		(cchwgn + i)->I = randnrm() * sqrt(ampn / 2) * 1;
+	}
+}
+void Nyquist(double* chf) {
+	unsigned int i;
+	double F = 0, a = 0.5, G = 0, H;
+	for (i = 0; i < NSAMF0; i++) {
+		F = (double)i / NSYMB;
+		if (F >= NOVSM / 2 && F < NOVSM) {//Fが8以上16未満の場合の処理
+			F = F - NOVSM;		}
+		if (fabs(F) <= 0.25) {
+			G = 1.0;		}
+		else if (0.25 < fabs(F) && fabs(F) < 0.75) {//(1 + a) / 2 
+			G = 0.5 * (1. - sin((PI / a) * (fabs(F) - 0.5)));	}
+		else if (fabs(F) >= 0.75) {
+			G = 0;	}
+		H = sqrt(G);
+		*(chf + i) = H;	}
+}
+void txfft(COMPLEX* ctxsig, int* irev, COMPLEX* carg) {
+	unsigned int i0;
+	
+		for (i0 = 0; i0 < NSYMB; i0 ++) {
+			fftope((ctxsig + F0*i0), F0, -1, irev, carg);//256回IFFT
+		}
+
+}
+void rxfft(COMPLEX* crxdem, int* irev, COMPLEX* carg) {
+	unsigned int i0;
+	
+	for (i0 = 0; i0 < NSYMB; i0++) {
+	fftope((crxdem + F0 * i0), F0, 1, irev, carg); //FFT 
+	
+	}	
+	//for (i0 = 0; i0 < NSYMB*2; i0++) {
+	//printf("%d  %6.3lf  %6.3lf   \n", i0, (crxdem + i0)->R, (crxdem + i0)->I);
+	//}
+}
+void cpcreate(COMPLEX* ctxsig, COMPLEX* cpctxsig) {
+	unsigned int i = 0, i1 = 0, i2 = 0, i4 = 0;
+	
+	for (i = 0; i < NSYMB; i++) {//NSYMB*64->NSYMB*80  (i * NOVSM)
+		//配列のなかで80かけるように変更
+		for (i1 = 0; i1 < F0; i1++) {
+			f0ccopy((ctxsig + i1 + F0 * i), (cpctxsig + CP + i1 + NOVSM * i));
+		//	printf("%d  %6.3lf  %6.3lf   \n", i1, (ctxsig+ i1)->R, (ctxsig + i1)->I);
+		}	
+		for (i2 = 0; i2 < CP; i2++) {//NOVSM - CP 
+			f0ccopy((ctxsig + F0 - CP + i2 + F0 * i), (cpctxsig + i2 + NOVSM * i));
+		//	printf("%d %lf %lf \n", i2, (ctxsig + F0 - CP + i2 + (i))->R, (cpctxsig + i2 + (i))->R);
+		}
+	}
+	//for (i = 0; i < 81; i++) { printf("%d %lf %lf \n", i, (ctxsig + i)->R, (cpctxsig + i)->R); };//0~79まで0
+}
+
+void correlation(COMPLEX* ctxmod, COMPLEX* ctxmod2, COMPLEX* autosignal) {
+	 int i = 0,k = 0;
+	 int l = 0;//= k - i
+	COMPLEX ctx;
+	for (l = 0; l < NSYMB * 2; l++) {
+		f0cset(0, 0, autosignal + l);
+	}
+	//printf("autosignal %lf \n", (autosignal + i)->r);
+	 
+	for (i = 0; i < 255; i++) {
+		for (l = 0; l < NSYMB; l++) {
+			//printf("ctxmod %lf \n", (ctxmod + l )->r);
+			
+			f0cmul((ctxmod + l),(ctxmod2 + l + i), &(ctx));
+			//f1cmul((ctxmod + l), (ctxmod + l + i));
+			//printf("ctx  %lf  %lf \n", (ctxmod + l)->r, (ctxmod + l)->i);
+			f1cadd((autosignal + i), &(ctx));
+			//f1conjg(ctxmod + i);//共役,fmod (double)(NSYMB - 1));//剰余
+
+		//	printf("autosignal %lf %lf \n", (autosignal + l)->r,(autosignal + l)->i);
+	
+		}
+	
+	fprintf(fp5,"%lf \n", ((autosignal + i)->R - 1)/ (255 - 1));
+	//printf("autosignal %lf \n", (autosignal + i)->i);
+
+	}
+	//for (l = 0; l < NSYMB; l++) {
+	//			
+	//			f0cmul((ctxmod + l),(ctxmod + l + i), &(ctx));
+	//			//f1cmul((ctxmod + l), (ctxmod + l + i));
+	//			
+	//			f1cadd((autosignal + i), &(ctx));
+	//			
+	//		}
+	//for (l = 0; l < NSYMB * 2; l++) {
+	//	f0cset(0, 0, autosignal + l);
+	//}
+	//l = 0;
+	////printf("autosignal %lf \n", (autosignal + i)->R);
+	//for (i = 0; i < 255; i++) {
+	//	for (k = 0; k < NSYMB; k++) {
+	//		//printf("ctxmod %lf \n", ((ctxmod  - 255)->R));
+	//		//fmod((ctxmod + l - i)->R, (double)(NSYMB));
+	//		
+	//		l = (( k -  i % NSYMB));
+	//		
+	//		if (l < 0) {
+	//			l += NSYMB;
+	//		
+	//		}
+	//	//	printf("a %d \n", (l));
+	//		f1conjg(ctxmod + l);
+	//		f0cmul((ctxmod + k), (ctxmod + l), &(ctx));
+	//		//f1cmul((ctxmod + l), (ctxmod + l + i));
+	//		//printf("ctx %d  %lf  %lf \n",l, (ctxmod + l)->R, (ctxmod +k)->R);
+	//		f1cadd((autosignal + i), &(ctx));
+	//		
+
+	//			//printf("autosignal %lf %lf \n", (autosignal + l)->R,(autosignal + l)->I);
+
+	//	}
+	//	fprintf(fp5, "%lf \n", ((autosignal + i)->R - 1) / (255 - 1));
+		//printf("autosignal %lf \n", (autosignal + i)->R);
+
+	}
+
