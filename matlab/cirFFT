@@ -1,0 +1,74 @@
+% M系列のビット数 (m=10)
+m = 10; 
+n = 2^m - 1;  % M系列の長さ
+itxinf = zeros(1, n); % 出力を格納する配列
+
+% シフトレジスタの初期値
+reg = 1; % 初期値
+for i = 1:n
+    feedback = bitget(reg, 10) + bitget(reg, 3); % フィードバック計算
+    output = bitget(reg, 1); % 出力のビット
+    reg = bitshift(reg, -1); % シフトレジスタを1ビット右シフト
+    if feedback == 1
+        reg = bitset(reg, 10); % フィードバックが1なら10ビット目をセット
+    end
+    itxinf(i) = output; % 出力値を格納
+end
+
+% M系列の相関を計算
+correlation = xcorr(itxinf, 'unbiased'); % 正規化相関を計算
+
+% 横軸を時間 [msec] に変換 (サンプリング周波数は96kHz)
+Fs = 96000; % サンプリング周波数 (48kHz)
+time = (1:length(correlation)) / Fs * 1000; % 時間軸 (ミリ秒)
+
+% FFTを用いて振幅周波数特性と位相周波数特性を計算
+nfft = 1024; % DFTの点数を1024に設定
+fft_result = fft(itxinf, nfft); % FFT計算
+
+% ピークを最後尾に配置し、512番目に0を挿入して計算する方法
+% M系列の相関結果に基づくDFTを計算
+
+% ピークを最後尾に移動
+correlation_shifted = circshift(correlation, [0, nfft/2]);
+
+% 512番目に0を挿入
+correlation_shifted(512) = 0;
+
+% 1024点FFTを計算
+fft_result_shifted = fft(correlation_shifted, 1024);
+
+% 振幅と位相の計算
+amplitude_shifted = abs(fft_result_shifted);
+amplitude_db_shifted = 20*log10(amplitude_shifted / max(amplitude_shifted)); % 最大値で正規化してdB表示
+
+% 位相特性の計算 (正規化位相)
+phase = angle(fft_result_shifted);
+normalized_phase = phase / pi;  % 位相を -π から π の範囲で正規化して -1 から 1 の範囲に変換
+
+% 相関の結果をプロット
+figure;
+subplot(3,1,1);
+plot(correlation);
+title('M系列の自己相関');
+xlabel('遅延 (サンプル)');
+ylabel('相関値');
+
+% 振幅周波数特性をプロット（dB表示）
+subplot(3,1,2);
+freq_shifted = Fs * (0:(1024/2)) / 1024;
+plot(freq_shifted, amplitude_db_shifted(1:1024));
+title('振幅周波数特性 (dB) - ピークを最後尾に移動');
+xlabel('周波数 [Hz]');
+ylabel('振幅 [dB]');
+grid on;
+
+% 位相周波数特性をプロット
+subplot(3,1,3);
+plot(freq_shifted, phase_shifted(1:1024));
+title('位相周波数特性 - ピークを最後尾に移動');
+xlabel('周波数 [Hz]');
+ylabel('位相 [ラジアン]');
+grid on;
+
+
