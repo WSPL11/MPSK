@@ -1,0 +1,40 @@
+function main()
+    m = 10; % シフトレジスタのビット数
+    N = (2^m) - 1; % M系列の周期
+    
+    % M系列の生成
+    itxinf = generateMSequence(m, N);
+    
+    % FFTの処理
+    infft = N;
+    itxinfComplex = complex(itxinf, zeros(size(itxinf))); % 実数部のみ
+    cfftwk = fft(itxinfComplex); % FFT
+    
+    % 逆特性の計算
+    SIGMA = 0.01;
+    cfftwkconj = conj(cfftwk); % Hmの複素共役
+    abs_val = abs(cfftwk).^2; % 絶対値の二乗
+    add = abs_val + (SIGMA^2); % 逆周波数特性の分母
+    cfftwki = cfftwkconj ./ add; % 逆周波数特性の計算
+    
+    % 逆FFTでタップ係数を求める
+    ck = ifft(cfftwki);
+    
+    % 結果の表示
+    disp('M系列:');
+    disp(itxinf);
+    disp('逆特性のタップ係数:');
+    disp(ck);
+end
+
+function seq = generateMSequence(m, N)
+    reg = 1; % シフトレジスタの初期値
+    seq = zeros(1, N);
+    
+    for i = 1:N
+        output = bitand(reg, 1);
+        feedback = bitxor(bitget(reg, 3), 0); % フィードバックの計算
+        reg = bitshift(reg, -1) + bitshift(feedback, m - 1);
+        seq(i) = output;
+    end
+end
