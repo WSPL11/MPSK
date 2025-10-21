@@ -1,1 +1,173 @@
+def stop_recording(self):
+        """
+        録音と全ての関連処理（タイマー、ストリーム、プロットウィンドウ）を停止し、リソースを解放する。
+        """
+        # 既に停止中の場合は処理をスキップ（早期リターン）
+        if not self.is_recording:
+            return
+            
+        # 定期的な分析処理を行うタイマーを停止
+        self.analysis_timer.stop()
+        
+        # オーディオストリームが存在すれば停止し、クローズ（リソース解放）
+        if self.audio_stream:
+            self.audio_stream.stop()
+            self.audio_stream.close()
+            self.audio_stream = None # ストリームオブジェクトをNoneに戻し、解放を明示
+        
+        # 開いている全てのプロットウィンドウをクローズ
+        if self.amp_window: self.amp_window.close()
+        if self.phase_window: self.phase_window.close()
+            
+        # UIと内部ステータスの更新
+        self.is_recording = False
+        
+        # ポスト等化ファイル（postcorder.txt）の有無に応じてステータス表示を分岐
+        if self.equalizer_coeffs is None:
+            self.status_label.setText("ステータス: 停止 (フィルタファイル無)")
+            self.status_label.setStyleSheet("color: red;")
+        else:
+            self.status_label.setText("ステータス: 停止")
+            self.status_label.setStyleSheet("color: black;")
+            
+        # 入力レベル表示をリセットし、ボタンの有効/無効状態を切り替え
+        self.db_level_label.setText("入力レベル: --- dBFS")
+        self.level_feedback_label.setText("")
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+
+    def _perform_analysis(self):
+        """
+        定期タイマーにより呼び出され、オーディオバッファの更新と相関（Correlation）分析を実行する。
+        """
+        # 1. キューから新規データを全て取り出す
+        # キューからデータをリストとして収集（Flatteningの準備）
+        new_data = [];
+        while not self.audio_queue.empty():
+            new_data.append(self.audio_queue.get())
+        
+        if not new_data:
+            return # 新規データがない場合は分析をスキップ
+            
+        # 2. オーディオバッファの更新と長尺化
+        # 各ブロックを平坦化（Flatten）し、既存のバッファと結合
+        flattened_new_data = [block.flatten() for block in new_data]
+        self.audio_buffer = np.concatenate([self.audio_buffer, *flattened_new_data])
+        
+        # バッファを最大長（BUFFER_DURATION_S）に維持するため、古いデータを破棄
+        max_buffer_samples = int(SAMPLE_RATE * BUFFER_DURATION_S)
+        if len(self.audio_buffer) > max_buffer_samples:
+            self.audio_buffer = self.audio_buffer[-max_buffer_samples:]
+            
+        # 3. 入力レベルの計算とUIフィードバック
+        # 直近0.1秒（マジックナンバーのため定数化推奨）のサンプルを取得
+        level_samples = self.audio_buffer[-int(SAMPLE_RATE * 0.1):] 
+        
+        if level_samples.size > 0:
+            # RMS（二乗平均平方根）とdBFS（フルスケールに対するデシベル）を計算
+            rms = np.sqrt(np.mean(level_samples**2))
+            dbfs = 20 * np.log10(rms) if rms > 1e-10 else MIN_DB_LEVEL
+            self.db_level_label.setText(f"入力レベル: {dbfs:.1f} dBFS")
+            
+            # 音量に応じたフィードバックメッセージと色を設定
+            feedback_text, color = "", "black"
+            if dbfs < LEVEL_THRESHOLD_LOW:
+                feedback_text, color = "音が小さい", "blue"
+            elif LEVEL_THRESHOLD_IDEAL_LOW <= dbfs < LEVEL_THRESHOLD_IDEAL_HIGH:
+                feedback_text, color = "理想的な音量", "green"
+            elif dbfs >= LEVEL_THRESHOLD_HIGH:
+                feedback_text, color = "音が大きい", "red"
+            self.level_feedback_label.setText(feedback_text)
+            self.level_feedback_label.setStyleSheet(f"color: {color};")
+            
+        # 4. 相関処理のためのデータ準備
+        samples_for_analysis = int(SAMPLE_RATE * ANALYSIS_DURATION_S)
+        if len(self.audio_buffer) < samples_for_analysis:
+            return # 分析に必要な長さのデータがまだない場合は終了
+            
+        # 分析に必要な長さの最新データを抽出
+        long_signal = self.audio_buffer[-samples_for_analysis:]
+        short_signal = M_SEQUENCE # 既知のMシーケンス信号（基準信号）
+        
+        # 5. 正規化相互相関（Normalized Cross-Correlation）の計算
+        correlation = np.correlate(long_signal, short_signal, mode='valid')
+        correlation *= CORRELATION_ADJUSTMENT_FACTOR # 相関値の微調整（キャリブレーション）
+        
+        # 正規化係数の計算（窓関数内の信号エネルギー）
+        short_energy = np.sum(short_signal**2)
+        s = np.cumsum(long_signal**2) # long_signalのエネルギーの累積和
+        
+        # スライディングウィンドウ（Sliding Window）によるlong_signalのエネルギー計算
+        long_energy_window = s[len(short_signal) - 1:] - np.concatenate(([0], s[:-len(short_signal)]))
+        
+        # 正規化係数（分母）
+        norm_factor = np.sqrt(short_energy * long_energy_window)
+        norm_factor[norm_factor < 1e-9] = 1e-9 # ゼロ除算回避
+        normalized_correlation = correlation / norm_factor
+        
+        # 6. CIR（インパルス応答）窓の抽出
+        peak_index_corr = np.argmax(np.abs(normalized_correlation)) # 相関ピーク位置を検出
+        # CIR窓のサイズ。定数として定義すべき値（ANALYSIS_WINDOW_SIZEなど）
+        window_size = 1024
+        
+        # ピークを中心に窓（CIR_Window）を抽出するためのインデックスを計算
+        start_index = max(0, peak_index_corr - window_size // 2)
+        end_index = start_index + window_size
+        
+        # 境界条件のチェックとインデックスの調整
+        if end_index > len(normalized_correlation):
+            end_index = len(normalized_correlation)
+            start_index = end_index - window_size
+        cir_window = normalized_correlation[start_index:end_index] # 窓の切り出し
+
+        # 7. ポスト等化（Post-Equalization）の適用
+        final_cir = cir_window
+        if self.equalizer_coeffs is not None and self.equalizer_checkbox.isChecked():
+            # CIRと等化係数の長さが一致する場合にのみ適用
+            if len(cir_window) == len(self.equalizer_coeffs):
+                # 周波数領域に変換
+                freq_domain_cir = np.fft.fft(cir_window)
+                # 等化係数を乗算（ポスト等化の適用）
+                equalized_freq_domain = freq_domain_cir * self.equalizer_coeffs
+                # 時間領域に戻し、実数部のみ取得（ノイズ成分が虚数部に残る可能性があるため）
+                final_cir = np.fft.ifft(equalized_freq_domain).real
+
+        # メインの相関プロットを更新（時間領域のCIR）
+        self._update_graph(final_cir)
+
+        # 8. 周波数特性（振幅・位相）の計算とプロット
+        # CIRが計算された場合のみ実行
+        if self.amp_window and self.phase_window:
+            # プロット更新のため、再びCIRのピーク位置を検出
+            peak_index_window = np.argmax(np.abs(final_cir))
+            
+            # 遅延成分を先頭に移動（位相特性を線形化しやすくする）
+            # 信号を先頭にロールシフト（Roll Shift）
+            shifted_cir = np.roll(final_cir, -peak_index_window)
+
+            N = len(shifted_cir)
+            if N > 0:
+                # 先頭シフトされたCIRをFFT（周波数特性の計算）
+                cir_fft = np.fft.fft(shifted_cir)
+                freqs = np.fft.fftfreq(N, d=1.0 / SAMPLE_RATE)
+                
+                # 正の周波数成分のみを抽出
+                positive_mask = freqs >= 0
+                freqs = freqs[positive_mask]
+                cir_fft = cir_fft[positive_mask]
+                
+                # 振幅特性（パワー・スペクトル）を計算し、dB単位に変換
+                power_spectrum = np.abs(cir_fft)**2
+                avg_power = np.mean(power_spectrum)
+                # ゼロ除算防止と最小dBレベルで対数変換
+                power_db = 10 * np.log10(power_spectrum / avg_power) if avg_power > 1e-12 else np.full_like(power_spectrum, -200)
+                
+                # 位相特性（位相を-0.5から+0.5サイクルに正規化）
+                # 位相はアンラップ（Unwrapping）せず、-π〜πの主値を使用
+                phase_wrapped = np.angle(cir_fft)
+                phase = phase_wrapped / (2 * np.pi)
+
+                # プロットウィンドウを更新
+                self.amp_window.update_plot(freqs, power_db)
+                self.phase_window.update_plot(freqs, phase)
 
